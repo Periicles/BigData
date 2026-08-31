@@ -88,9 +88,23 @@ pas les mêmes données → droits d'accès distincts ».
 
 Un filtre applicatif serait contournable par quiconque écrit sa propre requête.
 Nous avons donc séparé **physiquement** : deux bases ClickHouse, deux comptes de
-lecture, des droits disjoints. S'y ajoute un troisième compte, purement
-technique, qui configure la plateforme — il n'est pas un profil métier et le
-sujet ne le mentionne pas. Ni l'un ni l'autre n'a accès aux couches bronze et silver,
+lecture, des droits disjoints.
+
+**Trois rôles au total**, aux vocations distinctes :
+
+| Rôle | Vocation | Ce qu'il peut atteindre |
+|---|---|---|
+| Direction hospitalière | Piloter l'activité et la qualité des soins | `gold_pilotage` uniquement |
+| Recherche clinique | Décrire des cohortes, sous contrainte de petits effectifs | `gold_recherche` uniquement |
+| Administration de l'entrepôt | Exploiter le pipeline, accorder les habilitations, assurer traçabilité et conformité | L'ensemble, y compris bronze et silver |
+
+Le troisième rôle n'est pas une commodité technique : dans un entrepôt de données
+de santé, quelqu'un doit pouvoir **remonter à la ligne d'origine** — pour
+diagnostiquer un incident, produire une piste d'audit, ou exécuter une demande
+d'effacement au titre du RGPD. C'est précisément ce que les colonnes
+`_fichier_source` et `_run_id` rendent possible, et l'administrateur est le seul
+à y avoir accès. Ni le pilotage ni la recherche ne peuvent atteindre le détail,
+fût-il pseudonymisé. Ni l'un ni l'autre n'a accès aux couches bronze et silver,
 ce qui interdit de remonter au détail.
 
 Le refus est prononcé par le moteur, **y compris depuis l'éditeur SQL de

@@ -90,16 +90,25 @@ Comptez une quinzaine de secondes pour le premier démarrage de Metabase, puis
 | Tableaux de bord | http://localhost:3000 |
 | Console SQL | http://localhost:8123/play — utilisateur `eds_admin` |
 
-**Deux profils métier, plus un compte technique.** Le sujet définit exactement
-deux publics — « Pilotage et recherche ne voient pas les mêmes données → droits
-d'accès distincts » — et chacun a son compte. L'administrateur n'est pas un
-profil métier : c'est le compte qui configure la plateforme.
+**Trois rôles, trois vocations distinctes.** Le sujet définit deux publics
+métier — « pilotage et recherche ne voient pas les mêmes données → droits
+d'accès distincts ». S'y ajoute l'administration de l'entrepôt, qui est un rôle
+à part entière dans un EDS : c'est lui qui exploite le pipeline, accorde les
+habilitations et répond d'une demande d'effacement.
 
-| Compte | Rôle | Voit | Mot de passe |
-|---|---|---|---|
-| `pilotage@eds-chu.local` | **profil métier** | le tableau Pilotage et la base `gold_pilotage`, rien d'autre | `MB_PILOTAGE_PASSWORD` |
-| `recherche@eds-chu.local` | **profil métier** | le tableau Recherche et la base `gold_recherche`, rien d'autre | `MB_RECHERCHE_PASSWORD` |
-| `admin@eds-chu.local` | compte technique | les deux, et l'administration | `MB_ADMIN_PASSWORD` |
+| Compte | Vocation | Périmètre |
+|---|---|---|
+| `pilotage@eds-chu.local` | **Direction hospitalière** — piloter l'activité et la qualité des soins | Tableau Pilotage, base `gold_pilotage`. Rien d'autre. |
+| `recherche@eds-chu.local` | **Recherche clinique** — décrire des cohortes de patients | Tableau Recherche, base `gold_recherche`. Rien d'autre. |
+| `admin@eds-chu.local` | **Administration de l'entrepôt** — exploiter le pipeline, gérer les habilitations, assurer traçabilité et conformité | Les deux tableaux, l'administration de la plateforme, et l'accès aux couches techniques via la console SQL |
+
+Mots de passe : `MB_PILOTAGE_PASSWORD`, `MB_RECHERCHE_PASSWORD`, `MB_ADMIN_PASSWORD`
+dans `.env`.
+
+> L'administrateur est le **seul** à pouvoir atteindre le détail pseudonymisé des
+> couches bronze et silver. C'est cohérent avec sa vocation : lui seul a besoin de
+> remonter à la ligne d'origine pour traiter un incident ou une demande
+> d'effacement. Ni le pilotage ni la recherche ne le peuvent.
 
 La séparation joue à trois niveaux : permissions de collection (quel tableau est
 visible), permissions de données (quelle base est interrogeable), et surtout
