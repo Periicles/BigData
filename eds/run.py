@@ -15,6 +15,7 @@ Propriétés garanties :
                 sont intégralement reconstructibles : après un incident, une
                 simple relance suffit, sans restauration ni intervention.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -30,15 +31,25 @@ from clickhouse_connect.driver.exceptions import DatabaseError, OperationalError
 from eds import journal as mod_journal
 from eds.config import LAKE, exiger
 from eds.lake import copier_jour, jours_disponibles
-from eds.warehouse import (charger_bronze_jour, charger_referentiels, client,
-                           executer_fichier, valider_jour)
+from eds.warehouse import (
+    charger_bronze_jour,
+    charger_referentiels,
+    client,
+    executer_fichier,
+    valider_jour,
+)
 
 LOG = logging.getLogger("eds.run")
 
 # Fichiers de schéma appliqués à chaque démarrage : tous en CREATE IF NOT
 # EXISTS, donc rejouables sans effet de bord.
-SCHEMA = ("00_databases.sql", "10_bronze.sql", "20_silver.sql",
-          "30_gold.sql", "60_ops.sql")
+SCHEMA = (
+    "00_databases.sql",
+    "10_bronze.sql",
+    "20_silver.sql",
+    "30_gold.sql",
+    "60_ops.sql",
+)
 
 TENTATIVES_MAX = 3
 ATTENTE_INITIALE_S = 2
@@ -73,10 +84,13 @@ def avec_reprises(action, description: str):
         except Exception as erreur:
             if not _est_transitoire(erreur) or tentative == TENTATIVES_MAX:
                 raise
-            LOG.warning("panne transitoire, nouvelle tentative dans %ss : %s",
-                        attente, description)
+            LOG.warning(
+                "panne transitoire, nouvelle tentative dans %ss : %s",
+                attente,
+                description,
+            )
             time.sleep(attente)
-            attente *= 2   # temporisation exponentielle
+            attente *= 2  # temporisation exponentielle
 
 
 class Pipeline:
@@ -97,26 +111,63 @@ class Pipeline:
         try:
             yield compteur
         except Exception as erreur:
-            self._consigner(nom, jour, "echec", 0, time.monotonic() - t0,
-                            f"{type(erreur).__name__}: {erreur}"[:500], debut)
-            LOG.error("étape en échec", extra={"etape": nom, "jour": jour,
-                                               "run_id": self.run_id}, exc_info=True)
+            self._consigner(
+                nom,
+                jour,
+                "echec",
+                0,
+                time.monotonic() - t0,
+                f"{type(erreur).__name__}: {erreur}"[:500],
+                debut,
+            )
+            LOG.error(
+                "étape en échec",
+                extra={"etape": nom, "jour": jour, "run_id": self.run_id},
+                exc_info=True,
+            )
             raise
         else:
             duree = time.monotonic() - t0
             self._consigner(nom, jour, "succes", compteur["lignes"], duree, "", debut)
-            LOG.info("étape terminée",
-                     extra={"etape": nom, "jour": jour, "lignes": compteur["lignes"],
-                            "duree_s": round(duree, 3), "run_id": self.run_id})
+            LOG.info(
+                "étape terminée",
+                extra={
+                    "etape": nom,
+                    "jour": jour,
+                    "lignes": compteur["lignes"],
+                    "duree_s": round(duree, 3),
+                    "run_id": self.run_id,
+                },
+            )
 
     def _consigner(self, etape, jour, statut, lignes, duree, message, debut) -> None:
         try:
             self.ch.insert(
                 "ops.executions",
-                [[self.run_id, etape, _en_date(jour), statut, int(lignes), round(duree, 3),
-                  message, debut, datetime.now()]],
-                column_names=["run_id", "etape", "jour", "statut", "lignes",
-                              "duree_s", "message", "demarre_a", "termine_a"],
+                [
+                    [
+                        self.run_id,
+                        etape,
+                        _en_date(jour),
+                        statut,
+                        int(lignes),
+                        round(duree, 3),
+                        message,
+                        debut,
+                        datetime.now(),
+                    ]
+                ],
+                column_names=[
+                    "run_id",
+                    "etape",
+                    "jour",
+                    "statut",
+                    "lignes",
+                    "duree_s",
+                    "message",
+                    "demarre_a",
+                    "termine_a",
+                ],
             )
         except Exception:
             # Ne jamais faire échouer le pipeline à cause de son propre
@@ -126,7 +177,8 @@ class Pipeline:
     # ── état ─────────────────────────────────────────────────────────────
     def jours_deja_ingeres(self) -> set[str]:
         lignes = self.ch.query(
-            "SELECT DISTINCT toString(_jour_depot) FROM bronze.sejours").result_rows
+            "SELECT DISTINCT toString(_jour_depot) FROM bronze.sejours"
+        ).result_rows
         return {l[0] for l in lignes}
 
     def jours_a_traiter(self, tout: bool) -> list[str]:
@@ -176,13 +228,14 @@ class Pipeline:
 
         with self.etape("bronze", jour) as c:
             compteurs = avec_reprises(
-                lambda: charger_bronze_jour(self.ch, jour, self.run_id), f"bronze {jour}")
+                lambda: charger_bronze_jour(self.ch, jour, self.run_id),
+                f"bronze {jour}",
+            )
             c["lignes"] = sum(compteurs.values())
 
     def ingerer_referentiels(self) -> None:
         """Rechargés intégralement : ils ne sont déposés que le premier jour."""
-        jours = [j for j in jours_disponibles()
-                 if (LAKE / "referentiels" / j).is_dir()]
+        jours = [j for j in jours_disponibles() if (LAKE / "referentiels" / j).is_dir()]
         if not jours:
             LOG.warning("aucun référentiel dans le lake")
             return
@@ -193,23 +246,33 @@ class Pipeline:
     def transformer(self) -> None:
         with self.etape("silver") as c:
             avec_reprises(
-                lambda: executer_fichier(self.ch, "21_silver_transform.sql",
-                                         run_id=self.run_id), "silver")
+                lambda: executer_fichier(
+                    self.ch, "21_silver_transform.sql", run_id=self.run_id
+                ),
+                "silver",
+            )
             c["lignes"] = sum(
                 int(self.ch.command(f"SELECT count() FROM silver.{t}"))
-                for t in ("patients", "sejours", "diagnostics", "monitoring"))
+                for t in ("patients", "sejours", "diagnostics", "monitoring")
+            )
 
         with self.etape("gold") as c:
             avec_reprises(
-                lambda: executer_fichier(self.ch, "31_gold_transform.sql",
-                                         run_id=self.run_id), "gold")
+                lambda: executer_fichier(
+                    self.ch, "31_gold_transform.sql", run_id=self.run_id
+                ),
+                "gold",
+            )
             c["lignes"] = sum(
                 int(self.ch.command(f"SELECT count() FROM {t}"))
-                for t in ("gold_pilotage.fact_sejour",
-                          "gold_pilotage.fact_diagnostic",
-                          "gold_pilotage.fact_releve",
-                          "gold_recherche.coh_prevalence",
-                          "gold_recherche.coh_description"))
+                for t in (
+                    "gold_pilotage.fact_sejour",
+                    "gold_pilotage.fact_diagnostic",
+                    "gold_pilotage.fact_releve",
+                    "gold_recherche.coh_prevalence",
+                    "gold_recherche.coh_description",
+                )
+            )
 
     def publier_restitution(self) -> None:
         """Configure Metabase et publie les tableaux de bord.
@@ -219,6 +282,7 @@ class Pipeline:
         La restitution se rattrape par `python -m eds.metabase`.
         """
         from eds.metabase import ErreurMetabase, installer
+
         try:
             with self.etape("restitution") as c:
                 c["lignes"] = len(installer())
@@ -228,9 +292,11 @@ class Pipeline:
     def appliquer_droits(self) -> None:
         with self.etape("droits") as c:
             c["lignes"] = executer_fichier(
-                self.ch, "50_droits.sql",
+                self.ch,
+                "50_droits.sql",
                 mdp_pilotage=exiger("CH_PILOTAGE_PASSWORD"),
-                mdp_recherche=exiger("CH_RECHERCHE_PASSWORD"))
+                mdp_recherche=exiger("CH_RECHERCHE_PASSWORD"),
+            )
 
     # ── exécution ────────────────────────────────────────────────────────
     def executer(self, jours: list[str]) -> None:
@@ -254,16 +320,25 @@ def afficher_etat() -> int:
     """Affiche l'état de l'entrepôt sans rien modifier."""
     ch = client()
     disponibles = jours_disponibles()
-    ingeres = {l[0] for l in ch.query(
-        "SELECT DISTINCT toString(_jour_depot) FROM bronze.sejours").result_rows}
+    ingeres = {
+        l[0]
+        for l in ch.query(
+            "SELECT DISTINCT toString(_jour_depot) FROM bronze.sejours"
+        ).result_rows
+    }
 
     print("\nJOURS DE DÉPÔT")
     for jour in disponibles:
         print(f"   {'ingéré ' if jour in ingeres else 'EN ATTENTE'}  {jour}")
 
     print("\nVOLUMES")
-    for table in ("bronze.sejours", "silver.sejours", "silver.rejets",
-                  "gold_pilotage.fact_sejour", "gold_recherche.coh_prevalence"):
+    for table in (
+        "bronze.sejours",
+        "silver.sejours",
+        "silver.rejets",
+        "gold_pilotage.fact_sejour",
+        "gold_recherche.coh_prevalence",
+    ):
         print(f"   {table:34} {ch.command(f'SELECT count() FROM {table}'):>7}")
 
     print("\nCINQ DERNIÈRES ÉTAPES")
@@ -272,8 +347,10 @@ def afficher_etat() -> int:
         FROM ops.executions ORDER BY demarre_a DESC LIMIT 5
     """).result_rows
     for l in lignes:
-        print(f"   {l[0]:%Y-%m-%d %H:%M:%S}  {l[1]}  {l[2]:12} {l[3]:7} "
-              f"{l[4]:>7} lignes  {l[5]:>6.2f}s")
+        print(
+            f"   {l[0]:%Y-%m-%d %H:%M:%S}  {l[1]}  {l[2]:12} {l[3]:7} "
+            f"{l[4]:>7} lignes  {l[5]:>6.2f}s"
+        )
     if not lignes:
         print("   (aucune exécution enregistrée)")
     print()
@@ -283,14 +360,20 @@ def afficher_etat() -> int:
 def main(argv: list[str] | None = None) -> int:
     analyseur = argparse.ArgumentParser(
         prog="python -m eds.run",
-        description="Pipeline EDS CHU — collecte, transformation, restitution.")
+        description="Pipeline EDS CHU — collecte, transformation, restitution.",
+    )
     groupe = analyseur.add_mutually_exclusive_group()
-    groupe.add_argument("--jour", metavar="AAAA-MM-JJ",
-                        help="rejoue un jour de dépôt précis")
-    groupe.add_argument("--tout", action="store_true",
-                        help="recharge l'intégralité du dépôt")
-    groupe.add_argument("--etat", action="store_true",
-                        help="affiche l'état de l'entrepôt sans rien modifier")
+    groupe.add_argument(
+        "--jour", metavar="AAAA-MM-JJ", help="rejoue un jour de dépôt précis"
+    )
+    groupe.add_argument(
+        "--tout", action="store_true", help="recharge l'intégralité du dépôt"
+    )
+    groupe.add_argument(
+        "--etat",
+        action="store_true",
+        help="affiche l'état de l'entrepôt sans rien modifier",
+    )
     args = analyseur.parse_args(argv)
 
     mod_journal.configurer()
@@ -308,13 +391,16 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         pipeline = Pipeline()
-        jours = ([jour_demande] if jour_demande
-                 else pipeline.jours_a_traiter(tout=args.tout))
+        jours = (
+            [jour_demande] if jour_demande else pipeline.jours_a_traiter(tout=args.tout)
+        )
         pipeline.executer(jours)
     except ErreurPipeline as erreur:
         LOG.error("pipeline interrompu : %s", erreur)
-        LOG.error("reprise : corriger la cause puis relancer "
-                  "`python -m eds.run` — l'exécution est idempotente")
+        LOG.error(
+            "reprise : corriger la cause puis relancer "
+            "`python -m eds.run` — l'exécution est idempotente"
+        )
         return 1
     except Exception:
         LOG.critical("échec inattendu", exc_info=True)

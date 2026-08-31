@@ -10,6 +10,7 @@ Le hachage est déterministe pour que les jointures patients <-> séjours
 survivent, et salé parce que l'espace des IPP est énumérable : un SHA-256 nu
 serait cassable par dictionnaire en quelques secondes.
 """
+
 from __future__ import annotations
 
 import hashlib

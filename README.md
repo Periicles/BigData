@@ -87,8 +87,24 @@ Comptez une quinzaine de secondes pour le premier démarrage de Metabase, puis
 
 | | |
 |---|---|
-| Tableaux de bord | http://localhost:3000 — identifiants dans `.env` |
+| Tableaux de bord | http://localhost:3000 |
 | Console SQL | http://localhost:8123/play — utilisateur `eds_admin` |
+
+**Trois comptes Metabase**, créés automatiquement. Un administrateur qui verrait
+les deux tableaux de bord ne démontrerait pas le cloisonnement : chaque profil
+métier a donc son propre compte, et ne voit que ce qui le concerne.
+
+| Compte | Voit | Mot de passe |
+|---|---|---|
+| `admin@eds-chu.local` | les deux tableaux de bord, configure la plateforme | `MB_ADMIN_PASSWORD` |
+| `pilotage@eds-chu.local` | **uniquement** le tableau Pilotage et la base `gold_pilotage` | `MB_PILOTAGE_PASSWORD` |
+| `recherche@eds-chu.local` | **uniquement** le tableau Recherche et la base `gold_recherche` | `MB_RECHERCHE_PASSWORD` |
+
+La séparation joue à trois niveaux : permissions de collection (quel tableau est
+visible), permissions de données (quelle base est interrogeable), et surtout
+**droits ClickHouse** — chaque connexion utilise un compte distinct qui n'a de
+`GRANT` que sur sa base. C'est le moteur qui refuse, et aucun réglage de
+Metabase ne peut contourner cela.
 
 ---
 

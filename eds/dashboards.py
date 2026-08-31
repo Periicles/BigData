@@ -8,6 +8,7 @@ Chaque tableau de bord porte un encart de limites. Un indicateur dont on
 n'énonce pas le périmètre n'est pas exploitable pour décider : c'est le
 critère « fiabilité des indicateurs » du sujet.
 """
+
 from __future__ import annotations
 
 GRILLE = 24  # Metabase découpe la largeur d'un dashboard en 24 colonnes.
@@ -44,8 +45,11 @@ PILOTAGE = {
                 ORDER BY 2 DESC
             """,
             "affichage": "bar",
-            "vis": {"graph.dimensions": ["Service"], "graph.metrics": ["DMS (jours)"],
-                    "graph.y_axis.title_text": "Durée moyenne (jours)"},
+            "vis": {
+                "graph.dimensions": ["Service"],
+                "graph.metrics": ["DMS (jours)"],
+                "graph.y_axis.title_text": "Durée moyenne (jours)",
+            },
             "pos": (0, 0, 12, 7),
         },
         {
@@ -58,8 +62,11 @@ PILOTAGE = {
                 ORDER BY date_admission
             """,
             "affichage": "bar",
-            "vis": {"graph.dimensions": ["Jour"], "graph.metrics": ["Passages"],
-                    "graph.y_axis.title_text": "Passages"},
+            "vis": {
+                "graph.dimensions": ["Jour"],
+                "graph.metrics": ["Passages"],
+                "graph.y_axis.title_text": "Passages",
+            },
             "pos": (12, 0, 12, 7),
         },
         {
@@ -76,9 +83,11 @@ PILOTAGE = {
                 ORDER BY 2 DESC
             """,
             "affichage": "bar",
-            "vis": {"graph.dimensions": ["Service"],
-                    "graph.metrics": ["Taux de réadmission (%)"],
-                    "graph.y_axis.title_text": "%"},
+            "vis": {
+                "graph.dimensions": ["Service"],
+                "graph.metrics": ["Taux de réadmission (%)"],
+                "graph.y_axis.title_text": "%",
+            },
             "pos": (0, 7, 12, 7),
         },
         {
@@ -93,9 +102,11 @@ PILOTAGE = {
                 ORDER BY f.date_mesure, s.service
             """,
             "affichage": "line",
-            "vis": {"graph.dimensions": ["Jour", "Service"],
-                    "graph.metrics": ["Relevés en alerte"],
-                    "graph.y_axis.title_text": "Relevés en alerte"},
+            "vis": {
+                "graph.dimensions": ["Jour", "Service"],
+                "graph.metrics": ["Relevés en alerte"],
+                "graph.y_axis.title_text": "Relevés en alerte",
+            },
             "pos": (12, 7, 12, 7),
         },
         {
@@ -186,10 +197,12 @@ RECHERCHE = {
                 ORDER BY tranche_age
             """,
             "affichage": "bar",
-            "vis": {"graph.dimensions": ["Tranche d'âge", "Sexe"],
-                    "graph.metrics": ["Patients"],
-                    "stackable.stack_type": "stacked",
-                    "graph.y_axis.title_text": "Patients"},
+            "vis": {
+                "graph.dimensions": ["Tranche d'âge", "Sexe"],
+                "graph.metrics": ["Patients"],
+                "stackable.stack_type": "stacked",
+                "graph.y_axis.title_text": "Patients",
+            },
             "pos": (12, 0, 12, 8),
         },
         {

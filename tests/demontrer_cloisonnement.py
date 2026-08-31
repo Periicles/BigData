@@ -89,11 +89,58 @@ def controler_contenu_recherche() -> list[str]:
     return echecs
 
 
+def controler_comptes_metabase() -> list[str]:
+    """Vérifie la séparation dans l'outil de restitution.
+
+    Trois comptes, trois vues différentes. La séparation y est double :
+    permissions de collection (quel tableau de bord est visible) et
+    permissions de données (quelle base est interrogeable). Chaque connexion
+    utilise par ailleurs un compte ClickHouse distinct, ce qui rend le
+    cloisonnement opposable même à quelqu'un qui contournerait Metabase.
+    """
+    from eds.metabase import ErreurMetabase, _appel
+
+    print(f"\n  Comptes Metabase")
+    print(f"  {'─' * 66}")
+    echecs = []
+
+    attendus = {
+        "admin":     (exiger("MB_ADMIN_EMAIL"), exiger("MB_ADMIN_PASSWORD"),
+                      {"Pilotage hospitalier", "Recherche clinique"}),
+        "pilotage":  ("pilotage@eds-chu.local", exiger("MB_PILOTAGE_PASSWORD"),
+                      {"Pilotage hospitalier"}),
+        "recherche": ("recherche@eds-chu.local", exiger("MB_RECHERCHE_PASSWORD"),
+                      {"Recherche clinique"}),
+    }
+
+    for nom, (courriel, mot_de_passe, attendu) in attendus.items():
+        try:
+            session = _appel("/session", "POST",
+                             {"username": courriel, "password": mot_de_passe})["id"]
+        except ErreurMetabase as erreur:
+            echecs.append(f"connexion {nom} impossible : {erreur}")
+            print(f"   {ROUGE}✗{RAZ} {nom:10} connexion refusée")
+            continue
+
+        visibles = {d["name"] for d in _appel("/dashboard", session=session)
+                    if not d.get("archived")}
+        bases = {b["name"] for b in _appel("/database", session=session)["data"]}
+        conforme = visibles == attendu
+        if not conforme:
+            echecs.append(f"{nom} voit {visibles}, attendu {attendu}")
+        marque = f"{VERT}✓{RAZ}" if conforme else f"{ROUGE}✗{RAZ}"
+        print(f"   {marque} {nom:10} {len(visibles)} tableau(x), {len(bases)} base(s)"
+              f"   {GRIS}{', '.join(sorted(visibles))}{RAZ}")
+
+    return echecs
+
+
 def main() -> int:
     print("\n═══ DÉMONSTRATION DU CLOISONNEMENT DES DROITS ═══")
     echecs = tester("eds_pilotage", exiger("CH_PILOTAGE_PASSWORD"), "gold_pilotage")
     echecs += tester("eds_recherche", exiger("CH_RECHERCHE_PASSWORD"), "gold_recherche")
     echecs += controler_contenu_recherche()
+    echecs += controler_comptes_metabase()
 
     print()
     if echecs:

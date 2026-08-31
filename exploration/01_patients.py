@@ -1,4 +1,5 @@
 """Profilage qualite de la source patients."""
+
 import duckdb
 
 SRC = "eds-chu-sujet/source-filestorage"
@@ -9,8 +10,14 @@ SELECT *, regexp_extract(filename, '(\\d{{4}}-\\d{{2}}-\\d{{2}})', 1) AS jour_de
 FROM read_csv('{SRC}/patients/*/patients.csv', all_varchar=true, filename=true)
 """)
 
-def titre(t): print(f"\n{'-' * 74}\n{t}\n{'-' * 74}")
-def q(sql): print(con.sql(sql))
+
+def titre(t):
+    print(f"\n{'-' * 74}\n{t}\n{'-' * 74}")
+
+
+def q(sql):
+    print(con.sql(sql))
+
 
 titre("1.1  Unicite de patient_id")
 q("""
@@ -35,7 +42,9 @@ FROM (SELECT patient_id, count(DISTINCT jour_depot) AS nb_jours_presents
 GROUP BY nb_jours_presents ORDER BY nb_jours_presents
 """)
 
-titre("1.4  Les redepots modifient-ils les attributs ? (justifie 'garder le plus recent')")
+titre(
+    "1.4  Les redepots modifient-ils les attributs ? (justifie 'garder le plus recent')"
+)
 q("""
 SELECT patient_id,
        count(DISTINCT nom)        AS v_nom,
@@ -68,7 +77,9 @@ ORDER BY vides DESC
 """)
 
 titre("1.6  Domaine de la colonne sex (normalisation attendue M/F)")
-q("SELECT coalesce(sex,'<NULL>') AS sex, count(*) AS n FROM patients GROUP BY ALL ORDER BY n DESC")
+q(
+    "SELECT coalesce(sex,'<NULL>') AS sex, count(*) AS n FROM patients GROUP BY ALL ORDER BY n DESC"
+)
 
 titre("1.7  birth_date — formats et bornes")
 q("""

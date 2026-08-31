@@ -5,6 +5,7 @@ Python n'envoie que du SQL — les données ne transitent jamais par sa mémoire
 ClickHouse lit lui-même les fichiers du lake, monté en lecture seule dans son
 répertoire `user_files`.
 """
+
 from __future__ import annotations
 
 import logging
@@ -62,7 +63,9 @@ def executer_fichier(ch: Client, nom: str, **substitutions: str) -> int:
     instructions = decouper_instructions(contenu)
     for instruction in instructions:
         ch.command(instruction)
-    journal.info("sql exécuté", extra={"fichier": nom, "instructions": len(instructions)})
+    journal.info(
+        "sql exécuté", extra={"fichier": nom, "instructions": len(instructions)}
+    )
     return len(instructions)
 
 
@@ -79,17 +82,17 @@ def decouper_instructions(sql: str) -> list[str]:
         c = sql[i]
         suivant = sql[i + 1] if i + 1 < n else ""
 
-        if c == "-" and suivant == "-":                     # commentaire ligne
+        if c == "-" and suivant == "-":  # commentaire ligne
             fin = sql.find("\n", i)
             fin = n if fin == -1 else fin
             courante.append(sql[i:fin])
             i = fin
-        elif c == "/" and suivant == "*":                   # commentaire bloc
+        elif c == "/" and suivant == "*":  # commentaire bloc
             fin = sql.find("*/", i + 2)
             fin = n if fin == -1 else fin + 2
             courante.append(sql[i:fin])
             i = fin
-        elif c == "'":                                      # chaîne littérale
+        elif c == "'":  # chaîne littérale
             j = i + 1
             while j < n:
                 if sql[j] == "\\":
@@ -98,9 +101,9 @@ def decouper_instructions(sql: str) -> list[str]:
                 if sql[j] == "'":
                     break
                 j += 1
-            courante.append(sql[i:j + 1])
+            courante.append(sql[i : j + 1])
             i = j + 1
-        elif c == ";":                                      # fin d'instruction
+        elif c == ";":  # fin d'instruction
             instructions.append("".join(courante))
             courante = []
             i += 1
@@ -109,8 +112,9 @@ def decouper_instructions(sql: str) -> list[str]:
             i += 1
 
     instructions.append("".join(courante))
-    return [s.strip() for s in instructions
-            if s.strip() and not _seulement_commentaires(s)]
+    return [
+        s.strip() for s in instructions if s.strip() and not _seulement_commentaires(s)
+    ]
 
 
 def chemin_sql(nom: str) -> Path:
@@ -125,11 +129,12 @@ def _seulement_commentaires(bloc: str) -> bool:
 # Une requête par source. Le schéma des fichiers est déclaré explicitement :
 # on ne laisse pas ClickHouse deviner les types.
 
+
 def _sql_patients(jour: str, run_id: str) -> str:
     return f"""
     INSERT INTO bronze.patients
     SELECT patient_pseudo, birth_year, sex, region_code,
-           toDate('{jour}'), now(), '{run_id}'
+           toDate('{jour}'), replaceOne(_path, '/var/lib/clickhouse/user_files/', ''), now(), '{run_id}'
     FROM file('{LAKE_CH}/patients/{jour}/patients.csv', CSVWithNames,
               'patient_pseudo String, birth_year UInt16,
                sex String, region_code String')
@@ -145,7 +150,7 @@ def _sql_sejours(jour: str, run_id: str) -> str:
            parseDateTimeBestEffort(admission_ts),
            parseDateTimeBestEffortOrNull(nullIf(discharge_ts, '')),
            admission_mode, discharge_mode,
-           toDate('{jour}'), now(), '{run_id}'
+           toDate('{jour}'), replaceOne(_path, '/var/lib/clickhouse/user_files/', ''), now(), '{run_id}'
     FROM file('{LAKE_CH}/sejours/{jour}/sejours.csv', CSVWithNames,
               'stay_id String, service_code String, admission_ts String,
                discharge_ts String, admission_mode String,
@@ -158,7 +163,7 @@ def _sql_diagnostics(jour: str, run_id: str) -> str:
     return f"""
     INSERT INTO bronze.diagnostics
     SELECT stay_id, d.code_cim10, d.type,
-           toDate('{jour}'), now(), '{run_id}'
+           toDate('{jour}'), replaceOne(_path, '/var/lib/clickhouse/user_files/', ''), now(), '{run_id}'
     FROM file('{LAKE_CH}/diagnostics/{jour}/diagnostics.json', JSONEachRow,
               'stay_id String,
                diagnostics Array(Tuple(code_cim10 String, type String))')
@@ -170,7 +175,7 @@ def _sql_monitoring(jour: str, run_id: str) -> str:
     return f"""
     INSERT INTO bronze.monitoring
     SELECT stay_id, ts, toInt16(heart_rate), toInt16(spo2), toDecimal32(temp_c, 1),
-           toDate('{jour}'), now(), '{run_id}'
+           toDate('{jour}'), replaceOne(_path, '/var/lib/clickhouse/user_files/', ''), now(), '{run_id}'
     FROM file('{LAKE_CH}/monitoring/{jour}/monitoring.parquet', Parquet)
     """
 
@@ -204,8 +209,9 @@ def charger_bronze_jour(ch: Client, jour: str, run_id: str) -> dict[str, int]:
             f"SELECT count() FROM {table} WHERE _jour_depot = toDate('{jour}')"
         )
         resultats[source] = int(lignes)
-        journal.info("bronze chargé",
-                     extra={"source": source, "jour": jour, "lignes": lignes})
+        journal.info(
+            "bronze chargé", extra={"source": source, "jour": jour, "lignes": lignes}
+        )
     return resultats
 
 
@@ -218,13 +224,17 @@ def charger_referentiels(ch: Client, jour: str, run_id: str) -> dict[str, int]:
     valider_jour(jour)
     resultats = {}
     for table, fichier, colonnes in (
-        ("bronze.ref_services", "services.csv", "service_code String, service_label String"),
+        (
+            "bronze.ref_services",
+            "services.csv",
+            "service_code String, service_label String",
+        ),
         ("bronze.ref_cim10", "cim10.csv", "code_cim10 String, libelle String"),
     ):
         ch.command(f"TRUNCATE TABLE {table}")
         ch.command(f"""
             INSERT INTO {table}
-            SELECT *, now(), '{run_id}'
+            SELECT *, replaceOne(_path, '/var/lib/clickhouse/user_files/', ''), now(), '{run_id}'
             FROM file('{LAKE_CH}/referentiels/{jour}/{fichier}', CSVWithNames, '{colonnes}')
         """)
         resultats[table] = int(ch.command(f"SELECT count() FROM {table}"))

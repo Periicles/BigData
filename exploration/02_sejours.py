@@ -1,4 +1,5 @@
 """Profilage qualite de la source sejours + nature des depots."""
+
 import duckdb
 
 SRC = "eds-chu-sujet/source-filestorage"
@@ -12,10 +13,18 @@ for name, path, reader in [
     SELECT *, regexp_extract(filename, '(\\d{{4}}-\\d{{2}}-\\d{{2}})', 1) AS jour_depot
     FROM {reader}('{SRC}/{path}', all_varchar=true, filename=true)
     """)
-con.execute(f"CREATE VIEW services AS SELECT * FROM read_csv('{SRC}/referentiels/*/services.csv', all_varchar=true)")
+con.execute(
+    f"CREATE VIEW services AS SELECT * FROM read_csv('{SRC}/referentiels/*/services.csv', all_varchar=true)"
+)
 
-def titre(t): print(f"\n{'-' * 74}\n{t}\n{'-' * 74}")
-def q(sql): print(con.sql(sql))
+
+def titre(t):
+    print(f"\n{'-' * 74}\n{t}\n{'-' * 74}")
+
+
+def q(sql):
+    print(con.sql(sql))
+
 
 titre("2.0  NATURE DU DEPOT — snapshot cumulatif ou delta ?")
 q("""
@@ -62,8 +71,12 @@ GROUP BY ALL ORDER BY 1
 """)
 
 titre("2.3  Domaines admission_mode / discharge_mode")
-q("SELECT coalesce(nullif(trim(admission_mode),''),'<vide>') AS admission_mode, count(*) n FROM sejours GROUP BY ALL ORDER BY n DESC")
-q("SELECT coalesce(nullif(trim(discharge_mode),''),'<vide>') AS discharge_mode, count(*) n FROM sejours GROUP BY ALL ORDER BY n DESC")
+q(
+    "SELECT coalesce(nullif(trim(admission_mode),''),'<vide>') AS admission_mode, count(*) n FROM sejours GROUP BY ALL ORDER BY n DESC"
+)
+q(
+    "SELECT coalesce(nullif(trim(discharge_mode),''),'<vide>') AS discharge_mode, count(*) n FROM sejours GROUP BY ALL ORDER BY n DESC"
+)
 
 titre("2.4  INTEGRITE — service_code absent du referentiel")
 q("""

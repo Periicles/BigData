@@ -243,6 +243,96 @@ monitoring   64 799 + 1 878 = 66 677
 **Pour chaque source, silver + rejets = bronze, à la ligne près.** C'est ce qui
 distingue écarter une donnée de la perdre.
 
+### 2.9 Ce qui change à chaque passage de couche
+
+Le sujet demande de « justifier chaque chiffre ». Voici, frontière par
+frontière, ce que subit la donnée — et l'effet chiffré de chaque opération.
+
+#### Source → Lake · pseudonymisation
+
+Seules `patients` et `sejours` sont transformées : ce sont les deux seules
+sources portant de l'identité. Les trois autres sont recopiées à l'octet près.
+
+| Opération | Effet |
+|---|---|
+| `patient_id` → `patient_pseudo` | HMAC-SHA256 salé, tronqué à 64 bits. Appliqué **aux deux sources** avec le même sel, pour préserver la jointure |
+| `birth_date` → `birth_year` | Généralisation. `1933-12-09` devient `1933` |
+| `nir`, `nom`, `prenom` | **Supprimés** — 3 colonnes sur 7 disparaissent de `patients` |
+| Volumétrie | **inchangée** : 16 200 lignes entrent, 16 200 sortent |
+
+#### Lake → Bronze · typage et mise en forme tabulaire
+
+Aucune ligne n'est écartée à ce stade. C'est délibéré : on ne peut compter
+que ce qu'on a laissé entrer.
+
+| Opération | Effet |
+|---|---|
+| Typage explicite | `String` → `DateTime`, `UInt16`, `Decimal(4,1)`, `LowCardinality` |
+| `discharge_ts` vide → `NULL` | 1 190 séjours en cours préservés comme tels, et non datés par défaut |
+| Aplatissement du JSON | 15 000 objets imbriqués → **37 380 lignes**, une par code posé. Aucune donnée créée ni perdue |
+| Types larges et signés | `Int16` pour la fréquence cardiaque : les 1 369 relevés aberrants **peuvent entrer** et donc être comptés |
+| Partitionnement | Par jour de dépôt — c'est ce qui rend le rejeu d'un jour possible |
+| Ajout de 4 colonnes techniques | `_jour_depot`, `_fichier_source`, `_ingested_at`, `_run_id` |
+
+#### Bronze → Silver · qualité, déduplication, enrichissement
+
+C'est la seule frontière où des lignes sont écartées, et chacune l'est avec
+son motif.
+
+| Table | Entrée | Sortie | Opération |
+|---|---|---|---|
+| `patients` | 16 200 | **6 000** | Déduplication du snapshot cumulatif : `argMax` sur le jour de dépôt |
+| `sejours` | 15 000 | **14 864** | −136 incohérences temporelles (`discharge_ts < admission_ts`) |
+| `diagnostics` | 37 380 | **37 040** | −340 rattachés à un séjour écarté |
+| `monitoring` | 66 677 | **64 799** | −1 369 capteur hors plage, −509 séjour écarté (11 cumulent les deux) |
+| `rejets` | — | **2 354** | Toute ligne écartée, avec son motif et son détail |
+
+Colonnes ajoutées par calcul ou par jointure :
+
+| Colonne | Origine |
+|---|---|
+| `duree_jours` | `dateDiff` admission → sortie. **NULL** si séjour en cours |
+| `est_en_cours` | `discharge_ts IS NULL` |
+| `age_au_sejour` | `toYear(admission_ts) − birth_year` — approximé à l'année |
+| `service_label` | Jointure avec le référentiel des services |
+| `libelle` | Jointure avec la nomenclature CIM-10 |
+| `alerte_fc`, `alerte_spo2`, `alerte_temp`, `en_alerte` | Application des seuils |
+| `discharge_mode` | Normalisation : `''` → `'inconnu'` (1 992 séjours) |
+
+#### Silver → Gold · modélisation dimensionnelle
+
+Aucune ligne n'est perdue vers `gold_pilotage` : les trois faits reprennent
+exactement les volumes de silver. La transformation est structurelle.
+
+| Opération | Effet |
+|---|---|
+| Éclatement en faits et dimensions | 4 tables silver → 3 faits + 3 dimensions |
+| `tranche_age` | Calculée dans les faits, par tranches de 10 ans |
+| `est_urgence` | `admission_mode = 'urgence'` |
+| `est_sejour_index` | Clos **et** patient non décédé — dénominateur de la réadmission |
+| `suivi_readmission_30j` | Auto-jointure résolue **une fois**, à la construction |
+| Dénormalisation | `patient_pseudo`, `tranche_age`, `sexe` recopiés dans `fact_diagnostic` |
+| Axes temporels | `date_admission` pour les séjours, **`date_mesure`** pour les relevés — la mesure, jamais le dépôt |
+
+Vers `gold_recherche`, en revanche, la réduction est massive et volontaire :
+
+| Opération | Effet |
+|---|---|
+| Agrégation | 37 040 lignes de faits → **10** prévalences et **200** cohortes |
+| `HAVING >= 5 patients` | Filtre appliqué **à l'écriture** : aucune cohorte sous seuil n'existe |
+| Généralisation de l'âge | Tranches de 10 ans uniquement — `birth_year` absent |
+| Suppression du pseudonyme | `patient_pseudo` n'est pas exposé |
+
+#### Bilan
+
+| Couche | Lignes | Détail | Ce qu'elle garantit |
+|---|---|---|---|
+| **Lake** | 46 200 + Parquet | 14 fichiers | Copie fidèle, **sans aucune identité** |
+| **Bronze** | **135 275** | patients 16 200 · séjours 15 000 · diagnostics 37 380 · relevés 66 677 · référentiels 18 | Typé, partitionné, traçable jusqu'au fichier d'origine |
+| **Silver** | **125 057** | patients 6 000 · séjours 14 864 · diagnostics 37 040 · relevés 64 799 · **rejets 2 354** | Nettoyé, cohérent, enrichi — chaque exclusion motivée |
+| **Gold pilotage** | **122 721** | 3 faits (14 864 + 37 040 + 64 799) · 3 dimensions (6018) | Modèle dimensionnel interrogeable librement |
+| **Gold recherche** | **210** | prévalences 10 · cohortes 200 | Agrégats anonymisés, k ≥ 5, aucun pseudonyme |
+
 ---
 
 ## 3. Architecture, limites et recommandations

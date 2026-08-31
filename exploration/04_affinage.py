@@ -1,14 +1,25 @@
 """Affinage : nature des valeurs aberrantes monitoring, couverture, hors-fenetre."""
+
 import duckdb
 
 SRC = "eds-chu-sujet/source-filestorage"
 con = duckdb.connect()
 J = "regexp_extract(filename, '(\\d{4}-\\d{2}-\\d{2})', 1) AS jour_depot"
-con.execute(f"CREATE VIEW sejours AS SELECT *, {J} FROM read_csv('{SRC}/sejours/*/sejours.csv', all_varchar=true, filename=true)")
-con.execute(f"CREATE VIEW monitoring AS SELECT *, {J} FROM read_parquet('{SRC}/monitoring/*/monitoring.parquet', filename=true)")
+con.execute(
+    f"CREATE VIEW sejours AS SELECT *, {J} FROM read_csv('{SRC}/sejours/*/sejours.csv', all_varchar=true, filename=true)"
+)
+con.execute(
+    f"CREATE VIEW monitoring AS SELECT *, {J} FROM read_parquet('{SRC}/monitoring/*/monitoring.parquet', filename=true)"
+)
 
-def titre(t): print(f"\n{'-' * 74}\n{t}\n{'-' * 74}")
-def q(sql): print(con.sql(sql))
+
+def titre(t):
+    print(f"\n{'-' * 74}\n{t}\n{'-' * 74}")
+
+
+def q(sql):
+    print(con.sql(sql))
+
 
 titre("4.4  Les aberrations FC et SpO2 sont-elles portees par les MEMES lignes ?")
 q("""
@@ -25,7 +36,9 @@ FROM monitoring WHERE heart_rate NOT BETWEEN 20 AND 250 OR spo2 NOT BETWEEN 50 A
 GROUP BY ALL ORDER BY n DESC LIMIT 10
 """)
 
-titre("4.6  Quels services sont monitores ? (le monitoring ne couvre pas tous les sejours)")
+titre(
+    "4.6  Quels services sont monitores ? (le monitoring ne couvre pas tous les sejours)"
+)
 q("""
 SELECT s.service_code,
        count(DISTINCT s.stay_id) AS sejours,
@@ -44,7 +57,9 @@ FROM monitoring m JOIN (SELECT stay_id, try_cast(admission_ts AS TIMESTAMP) a,
                                try_cast(discharge_ts AS TIMESTAMP) d FROM sejours) s USING (stay_id)
 """)
 
-titre("4.8  ALERTES — volumetrie apres exclusion des aberrations (KPI 'releves en alerte / jour')")
+titre(
+    "4.8  ALERTES — volumetrie apres exclusion des aberrations (KPI 'releves en alerte / jour')"
+)
 q("""
 SELECT count(*) AS releves_valides,
        count(*) FILTER (heart_rate > 120 OR heart_rate < 40) AS alerte_fc,

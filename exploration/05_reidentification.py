@@ -1,13 +1,22 @@
 """Risque de re-identification sur les quasi-identifiants conserves apres pseudonymisation."""
+
 import duckdb
 
 SRC = "eds-chu-sujet/source-filestorage"
 con = duckdb.connect()
 J = "regexp_extract(filename, '(\\d{4}-\\d{2}-\\d{2})', 1) AS jour_depot"
-con.execute(f"CREATE VIEW patients AS SELECT *, {J} FROM read_csv('{SRC}/patients/*/patients.csv', all_varchar=true, filename=true)")
-con.execute(f"CREATE VIEW sejours AS SELECT *, {J} FROM read_csv('{SRC}/sejours/*/sejours.csv', all_varchar=true, filename=true)")
-con.execute(f"CREATE VIEW diag_raw AS SELECT *, {J} FROM read_json('{SRC}/diagnostics/*/diagnostics.json', filename=true)")
-con.execute("CREATE VIEW diag AS SELECT stay_id, d.code_cim10, d.type FROM diag_raw, unnest(diagnostics) AS t(d)")
+con.execute(
+    f"CREATE VIEW patients AS SELECT *, {J} FROM read_csv('{SRC}/patients/*/patients.csv', all_varchar=true, filename=true)"
+)
+con.execute(
+    f"CREATE VIEW sejours AS SELECT *, {J} FROM read_csv('{SRC}/sejours/*/sejours.csv', all_varchar=true, filename=true)"
+)
+con.execute(
+    f"CREATE VIEW diag_raw AS SELECT *, {J} FROM read_json('{SRC}/diagnostics/*/diagnostics.json', filename=true)"
+)
+con.execute(
+    "CREATE VIEW diag AS SELECT stay_id, d.code_cim10, d.type FROM diag_raw, unnest(diagnostics) AS t(d)"
+)
 # population dedupliquee, telle qu'elle entrerait dans l'entrepot apres pseudonymisation
 con.execute("""
 CREATE VIEW pop AS
@@ -16,10 +25,18 @@ SELECT DISTINCT ON (patient_id) patient_id,
 FROM patients ORDER BY patient_id, jour_depot DESC
 """)
 
-def titre(t): print(f"\n{'-' * 74}\n{t}\n{'-' * 74}")
-def q(sql): print(con.sql(sql))
 
-titre("5.1  k-anonymat sur (annee_naissance, sexe, region) — quasi-identifiants conserves")
+def titre(t):
+    print(f"\n{'-' * 74}\n{t}\n{'-' * 74}")
+
+
+def q(sql):
+    print(con.sql(sql))
+
+
+titre(
+    "5.1  k-anonymat sur (annee_naissance, sexe, region) — quasi-identifiants conserves"
+)
 q("""
 SELECT CASE WHEN k = 1 THEN 'k = 1  (UNIQUE — re-identifiable)'
             WHEN k < 5 THEN 'k = 2..4  (sous le seuil de 5)'

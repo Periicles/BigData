@@ -12,6 +12,7 @@ La transformation est faite **en flux**, ligne par ligne : les identités ne
 sont jamais écrites sur disque, pas même dans un répertoire temporaire, et
 l'empreinte mémoire ne dépend pas de la taille des fichiers.
 """
+
 from __future__ import annotations
 
 import csv
@@ -37,7 +38,7 @@ class ResultatCopie:
     source: str
     jour: str
     fichier: str
-    lignes: int | None   # None pour une copie binaire (non parsée)
+    lignes: int | None  # None pour une copie binaire (non parsée)
     pseudonymise: bool
 
 
@@ -112,8 +113,13 @@ def copier_source_jour(source: str, jour: str) -> list[ResultatCopie]:
     for r in resultats:
         journal.info(
             "copie lake",
-            extra={"source": r.source, "jour": r.jour, "fichier": r.fichier,
-                   "lignes": r.lignes, "pseudonymise": r.pseudonymise},
+            extra={
+                "source": r.source,
+                "jour": r.jour,
+                "fichier": r.fichier,
+                "lignes": r.lignes,
+                "pseudonymise": r.pseudonymise,
+            },
         )
     return resultats
 

@@ -240,6 +240,3 @@ Screenshots/
 *.salt
 
 .DS_Store
-
-# Document de travail, non versionné (à la demande)
-docs/MODELE-DONNEES.md

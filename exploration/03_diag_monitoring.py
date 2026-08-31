@@ -1,22 +1,39 @@
 """Anomalie discharge_mode, faisabilite readmission, puis diagnostics et monitoring."""
+
 import duckdb
 
 SRC = "eds-chu-sujet/source-filestorage"
 con = duckdb.connect()
 J = "regexp_extract(filename, '(\\d{4}-\\d{2}-\\d{2})', 1) AS jour_depot"
-con.execute(f"CREATE VIEW patients AS SELECT *, {J} FROM read_csv('{SRC}/patients/*/patients.csv', all_varchar=true, filename=true)")
-con.execute(f"CREATE VIEW sejours  AS SELECT *, {J} FROM read_csv('{SRC}/sejours/*/sejours.csv',  all_varchar=true, filename=true)")
-con.execute(f"CREATE VIEW monitoring AS SELECT *, {J} FROM read_parquet('{SRC}/monitoring/*/monitoring.parquet', filename=true)")
-con.execute(f"CREATE VIEW diag_raw AS SELECT *, {J} FROM read_json('{SRC}/diagnostics/*/diagnostics.json', filename=true)")
-con.execute(f"CREATE VIEW cim10 AS SELECT * FROM read_csv('{SRC}/referentiels/*/cim10.csv', all_varchar=true)")
+con.execute(
+    f"CREATE VIEW patients AS SELECT *, {J} FROM read_csv('{SRC}/patients/*/patients.csv', all_varchar=true, filename=true)"
+)
+con.execute(
+    f"CREATE VIEW sejours  AS SELECT *, {J} FROM read_csv('{SRC}/sejours/*/sejours.csv',  all_varchar=true, filename=true)"
+)
+con.execute(
+    f"CREATE VIEW monitoring AS SELECT *, {J} FROM read_parquet('{SRC}/monitoring/*/monitoring.parquet', filename=true)"
+)
+con.execute(
+    f"CREATE VIEW diag_raw AS SELECT *, {J} FROM read_json('{SRC}/diagnostics/*/diagnostics.json', filename=true)"
+)
+con.execute(
+    f"CREATE VIEW cim10 AS SELECT * FROM read_csv('{SRC}/referentiels/*/cim10.csv', all_varchar=true)"
+)
 con.execute("""
 CREATE VIEW diag AS
 SELECT stay_id, jour_depot, d.code_cim10, d.type
 FROM diag_raw, unnest(diagnostics) AS t(d)
 """)
 
-def titre(t): print(f"\n{'-' * 74}\n{t}\n{'-' * 74}")
-def q(sql): print(con.sql(sql))
+
+def titre(t):
+    print(f"\n{'-' * 74}\n{t}\n{'-' * 74}")
+
+
+def q(sql):
+    print(con.sql(sql))
+
 
 titre("2.8  ANOMALIE NON LISTEE — discharge_mode vide alors que le sejour est clos")
 q("""
@@ -62,7 +79,9 @@ GROUP BY ALL ORDER BY 1
 """)
 
 titre("3.2  DIAGNOSTICS — domaine de 'type' et regle un principal par sejour")
-q("SELECT coalesce(type,'<NULL>') AS type, count(*) n FROM diag GROUP BY ALL ORDER BY n DESC")
+q(
+    "SELECT coalesce(type,'<NULL>') AS type, count(*) n FROM diag GROUP BY ALL ORDER BY n DESC"
+)
 q("""
 SELECT nb_principaux, count(*) AS nb_sejours
 FROM (SELECT stay_id, count(*) FILTER (type = 'principal') AS nb_principaux FROM diag GROUP BY stay_id)

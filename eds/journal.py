@@ -9,6 +9,7 @@ Deux destinations, deux usages :
 Aucune donnée de santé ni identifiant patient n'est journalisé : les
 messages ne portent que des métadonnées d'exécution.
 """
+
 from __future__ import annotations
 
 import json
@@ -31,7 +32,9 @@ class FormateurJSON(logging.Formatter):
 
     def format(self, enregistrement: logging.LogRecord) -> str:
         charge = {
-            "horodatage": datetime.fromtimestamp(enregistrement.created).isoformat(timespec="seconds"),
+            "horodatage": datetime.fromtimestamp(enregistrement.created).isoformat(
+                timespec="seconds"
+            ),
             "niveau": enregistrement.levelname,
             "message": enregistrement.getMessage(),
         }
@@ -48,12 +51,15 @@ class FormateurConsole(logging.Formatter):
     """Sortie lisible à l'écran pendant une exécution manuelle."""
 
     def format(self, enregistrement: logging.LogRecord) -> str:
-        parties = [f"{datetime.fromtimestamp(enregistrement.created):%H:%M:%S}",
-                   f"{enregistrement.levelname:7}",
-                   enregistrement.getMessage()]
+        parties = [
+            f"{datetime.fromtimestamp(enregistrement.created):%H:%M:%S}",
+            f"{enregistrement.levelname:7}",
+            enregistrement.getMessage(),
+        ]
         details = " ".join(
             f"{c}={getattr(enregistrement, c)}"
-            for c in _CHAMPS_METIER if getattr(enregistrement, c, None) is not None
+            for c in _CHAMPS_METIER
+            if getattr(enregistrement, c, None) is not None
         )
         if details:
             parties.append(f"({details})")

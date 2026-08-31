@@ -3,6 +3,7 @@
 Aucun secret n'est écrit en dur : le sel de pseudonymisation et les mots de
 passe proviennent de `.env`, qui n'est pas versionné.
 """
+
 from __future__ import annotations
 
 import os

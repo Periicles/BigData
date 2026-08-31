@@ -17,6 +17,9 @@ CREATE TABLE IF NOT EXISTS bronze.patients
     region_code     LowCardinality(String),
 
     _jour_depot     Date,
+    -- Chemin du fichier d'origine, relevé par ClickHouse à la lecture :
+    -- pour toute ligne de l'entrepôt, on sait de quel dépôt elle provient.
+    _fichier_source String,
     _ingested_at    DateTime,
     _run_id         String
 )
@@ -38,6 +41,9 @@ CREATE TABLE IF NOT EXISTS bronze.sejours
     discharge_mode  LowCardinality(String),
 
     _jour_depot     Date,
+    -- Chemin du fichier d'origine, relevé par ClickHouse à la lecture :
+    -- pour toute ligne de l'entrepôt, on sait de quel dépôt elle provient.
+    _fichier_source String,
     _ingested_at    DateTime,
     _run_id         String
 )
@@ -55,6 +61,9 @@ CREATE TABLE IF NOT EXISTS bronze.diagnostics
     type_diag       LowCardinality(String),
 
     _jour_depot     Date,
+    -- Chemin du fichier d'origine, relevé par ClickHouse à la lecture :
+    -- pour toute ligne de l'entrepôt, on sait de quel dépôt elle provient.
+    _fichier_source String,
     _ingested_at    DateTime,
     _run_id         String
 )
@@ -75,6 +84,9 @@ CREATE TABLE IF NOT EXISTS bronze.monitoring
     temp_c          Decimal(4, 1),
 
     _jour_depot     Date,
+    -- Chemin du fichier d'origine, relevé par ClickHouse à la lecture :
+    -- pour toute ligne de l'entrepôt, on sait de quel dépôt elle provient.
+    _fichier_source String,
     _ingested_at    DateTime,
     _run_id         String
 )
@@ -89,6 +101,7 @@ CREATE TABLE IF NOT EXISTS bronze.ref_services
 (
     service_code    LowCardinality(String),
     service_label   String,
+    _fichier_source String,
     _ingested_at    DateTime,
     _run_id         String
 )
@@ -99,6 +112,7 @@ CREATE TABLE IF NOT EXISTS bronze.ref_cim10
 (
     code_cim10      LowCardinality(String),
     libelle         String,
+    _fichier_source String,
     _ingested_at    DateTime,
     _run_id         String
 )

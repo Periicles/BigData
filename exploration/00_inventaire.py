@@ -3,6 +3,7 @@
 Lecture en VARCHAR : on veut constater les formats reels, pas ceux
 qu'un auto-typage aurait silencieusement corriges.
 """
+
 import duckdb
 
 SRC = "eds-chu-sujet/source-filestorage"
