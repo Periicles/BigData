@@ -38,11 +38,24 @@ lake. Cadrer la ligne « 6000 patients, 17503 valeurs identifiantes contrôlées
 bloc : c'est la preuve qu'aucune ligne ne disparaît silencieusement.
 → *Critère Qualité des traitements*
 
-### 4 — Le cloisonnement, refusé par le moteur
+### 4 — Le cloisonnement, sur quatre niveaux  ★ la plus complète
 `bash ops/captures.sh 4`
 
-Huit tentatives d'accès croisées : chaque compte lit sa base et se voit refuser
-les trois autres. Cadrer les deux blocs de comptes.
+La sortie la plus dense du projet. Quatre blocs :
+
+1. **Accès croisés** — chaque compte de service lit sa base, se voit refuser les
+   trois autres ;
+2. **Contenu de la base recherche** — `birth_year`, `patient_pseudo` et `region`
+   absents, plus petite cohorte ≥ 5 ;
+3. **Comptes Metabase** — trois comptes, trois vues ; les deux comptes métier ne
+   voient aucune base et ne peuvent composer aucune requête ;
+4. **Droits au niveau colonne** — le compte de pilotage ne peut ni lire le
+   pseudonyme, ni dénombrer des patients, ni faire un `SELECT *`, **même pour
+   l'administrateur qui passerait par cette connexion** — et ses trois
+   indicateurs fonctionnent ;
+5. **Compte d'exploitation** — lecture des couches techniques, écriture refusée.
+
+Prévoyez **deux ou trois captures** : la sortie fait une quarantaine de lignes.
 → *Critère RGPD · livrable explicite de la Partie 1*
 
 ### 5 — Le cloisonnement vu depuis Metabase  ★ la plus convaincante
@@ -67,6 +80,21 @@ Code: 497 … eds_pilotage: Not enough privileges
 Prouve que le cloisonnement tient **même pour quelqu'un qui écrit sa propre
 requête** dans l'outil. C'est la capture qui coupe court à l'objection
 « votre filtre est contournable ».
+→ *Critère RGPD + Restitution*
+
+### 5 bis — Les trois comptes, vus de l'interface  ★ très parlante
+Manuel — trois connexions successives sur http://localhost:3000 :
+
+| Se connecter avec | Ce qu'on doit voir |
+|---|---|
+| `pilotage@eds-chu.local` | **un seul** tableau de bord, et aucune base dans « Parcourir » |
+| `recherche@eds-chu.local` | **un seul** tableau, l'autre |
+| `admin@eds-chu.local` | les deux tableaux, et trois connexions dont *Exploitation* |
+
+Capturer les deux premiers écrans d'accueil côte à côte : la différence saute aux
+yeux, et c'est la démonstration la plus immédiate du cloisonnement.
+
+Mots de passe : `MB_PILOTAGE_PASSWORD` et `MB_RECHERCHE_PASSWORD` dans `.env`.
 → *Critère RGPD + Restitution*
 
 ### 6 — Le tableau de bord Pilotage

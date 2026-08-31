@@ -359,7 +359,7 @@ Colonnes ajoutées par calcul ou par jointure :
 | `service_label` | Jointure avec le référentiel des services |
 | `libelle` | Jointure avec la nomenclature CIM-10 |
 | `alerte_fc`, `alerte_spo2`, `alerte_temp`, `en_alerte` | Application des seuils |
-| `discharge_mode` | Normalisation : `''` → `'inconnu'` (1 992 séjours) |
+| `discharge_mode` | Normalisation : `''` → `'inconnu'` — **1 975 séjours**. La source en compte 1 992 : les 17 autres cumulaient l'incohérence temporelle et sont partis avec les 136 exclus |
 
 #### Silver → Gold · modélisation dimensionnelle
 
@@ -507,6 +507,6 @@ c'est le seul point où la solution donne plus que ce que le sujet demandait.
 | **Haute** | Soumettre la stratégie de pseudonymisation au DPO, en particulier la conservation du triplet (année, sexe, région) en base pilotage. |
 | Moyenne | Formaliser la gestion du sel : conservation en coffre, procédure de rotation, et conséquence assumée — sa perte rend tout rapprochement avec la source définitivement impossible. |
 | Moyenne | Passer silver et gold en construction incrémentale si le volume dépasse quelques dizaines de millions de lignes. |
-| Moyenne | Documenter avec le CHU le cas des 1 992 séjours clos sans mode de sortie (13 % des séjours) : anomalie de saisie à corriger à la source, plutôt qu'à compenser en aval. |
+| Moyenne | Documenter avec le CHU le cas des **1 992 séjours clos sans mode de sortie dans la source** (13 % des séjours) : c'est une anomalie de saisie, à corriger à l'amont plutôt qu'à compenser en aval. |
 | Basse | Étendre l'équipement de monitoring aux autres services, ou acter que cet indicateur restera limité à deux services. |
 | Basse | Mettre en place une purge automatique selon les durées de conservation, actuellement non définies par le CHU. |
