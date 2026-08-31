@@ -1,0 +1,54 @@
+# Socle EDS CHU — entrepôt + restitution.
+# Tout démarre par : docker compose up -d
+services:
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:25.8
+    container_name: eds-clickhouse
+    environment:
+      # Utilisateur d'administration : c'est lui que le pipeline utilise.
+      CLICKHOUSE_USER: ${CH_ADMIN_USER}
+      CLICKHOUSE_PASSWORD: ${CH_ADMIN_PASSWORD}
+      # Autorise CREATE USER / GRANT en SQL : le cloisonnement pilotage/recherche
+      # est ainsi défini dans des fichiers .sql versionnés, pas dans du XML manuel.
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+    ports:
+      - "8123:8123"   # HTTP + console SQL intégrée sur /play
+      - "9000:9000"   # protocole natif
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+      - ./docker/clickhouse/logs:/var/log/clickhouse-server
+      # Le lake est monté en lecture seule : ClickHouse lit les fichiers
+      # lui-même via file(), Python n'envoie que du SQL.
+      - ./lake:/var/lib/clickhouse/user_files/lake:ro
+    ulimits:
+      nofile: { soft: 262144, hard: 262144 }
+    healthcheck:
+      test: ["CMD", "clickhouse-client", "--user", "${CH_ADMIN_USER}",
+             "--password", "${CH_ADMIN_PASSWORD}", "--query", "SELECT 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+    restart: unless-stopped
+
+  metabase:
+    image: metabase/metabase:v0.56.13
+    container_name: eds-metabase
+    ports:
+      - "3000:3000"
+    volumes:
+      # Persiste la base applicative de Metabase : les dashboards survivent
+      # à un redémarrage des conteneurs.
+      - metabase-data:/metabase-data
+    environment:
+      MB_DB_FILE: /metabase-data/metabase.db
+      JAVA_TIMEZONE: Europe/Paris
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  clickhouse-data:
+  metabase-data:

@@ -216,3 +216,19 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# ── EDS CHU — données de santé (RGPD art. 9) ──────────────────────────
+# Les fichiers sources contiennent l'identité en clair (nom, prénom, NIR).
+# Ils ne doivent jamais entrer dans l'historique git : un commit ne se retire pas.
+eds-chu-sujet/source-filestorage/
+landing/
+lake/
+
+# Le sel de pseudonymisation : sa fuite rendrait le hachage réversible.
+.env
+*.salt
+
+.DS_Store
+
+# Document de travail, non versionné (à la demande)
+docs/MODELE-DONNEES.md
