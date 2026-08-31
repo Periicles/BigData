@@ -120,6 +120,26 @@ rôles : `eds_admin` pour le pipeline, `eds_pilotage` et `eds_recherche` pour le
 deux connexions de restitution, et `eds_exploitation` — en **lecture seule** sur
 `bronze`, `silver` et `ops` — pour l'investigation.
 
+**Les droits de restitution sont posés colonne par colonne.** C'est la
+conséquence directe du choix d'un modèle en étoile : la couche gold contenant les
+faits au grain de l'événement, un `GRANT` sur la base entière donnerait au
+pilotage l'accès à `patient_pseudo` et à `stay_id`. Or la direction consulte des
+indicateurs d'activité — elle n'a jamais à désigner un patient ni à relier deux
+séjours.
+
+`eds_pilotage` ne dispose donc que des **16 colonnes** que ses tableaux de bord
+utilisent : codes de service, dates, tranches d'âge, durées et drapeaux
+d'alerte. Ni le pseudonyme, ni l'identifiant de séjour, ni les horodatages
+précis, ni les constantes brutes ; `dim_patient` et `fact_diagnostic` ne lui sont
+pas accordées du tout. Vérifié : il ne peut ni lire le pseudonyme, ni dénombrer
+des patients, ni exécuter un `SELECT *` — et il calcule sans difficulté la DMS,
+les passages aux urgences et les relevés en alerte.
+
+Cette borne ne dépend pas du compte humain mais du compte de service : **même
+l'administrateur ne peut pas lire le pseudonyme s'il passe par la connexion de
+pilotage**. Il doit emprunter la connexion d'exploitation, dont l'usage est
+tracé.
+
 Ce dernier mérite d'être justifié. L'administration aurait pu investiguer avec le
 compte du pipeline, qui a tous les droits. Nous ne l'avons pas fait :
 `eds_admin` peut créer et supprimer des bases, et ce pouvoir n'a pas sa place

@@ -124,9 +124,20 @@ pas confondre avec les trois rôles ci-dessus.
 | Compte ClickHouse | Usage | Droits |
 |---|---|---|
 | `eds_admin` | le pipeline | tous — il crée les tables et applique les habilitations |
-| `eds_pilotage` | connexion Metabase Pilotage | `SELECT` sur `gold_pilotage` |
-| `eds_recherche` | connexion Metabase Recherche | `SELECT` sur `gold_recherche` |
+| `eds_pilotage` | connexion Metabase Pilotage | `SELECT` **sur 16 colonnes** de `gold_pilotage` — ni `patient_pseudo`, ni `stay_id` |
+| `eds_recherche` | connexion Metabase Recherche | `SELECT` sur les colonnes des deux tables de cohortes |
 | `eds_exploitation` | connexion Metabase Exploitation | `SELECT` sur `bronze`, `silver`, `ops` — **lecture seule** |
+
+> **Les droits sont posés colonne par colonne, pas base par base.** Un `GRANT`
+> sur `gold_pilotage` entier donnerait accès à `patient_pseudo` et au grain du
+> séjour — très au-delà du besoin d'une direction, qui n'a jamais à désigner un
+> patient. Le compte de pilotage ne peut donc ni lire le pseudonyme, ni
+> dénombrer des patients, ni faire un `SELECT *`, ni atteindre `dim_patient` et
+> `fact_diagnostic` : le moteur refuse. Ses indicateurs, eux, fonctionnent.
+>
+> Cette borne tient **quel que soit le compte humain** : même l'administrateur,
+> s'il passe par la connexion de pilotage, ne peut pas lire le pseudonyme. Pour
+> cela, il doit emprunter la connexion d'exploitation, qui est tracée.
 
 > Le compte d'investigation n'est **pas** celui du pipeline. `eds_admin` peut
 > créer et supprimer des bases : ce pouvoir n'a pas sa place derrière une

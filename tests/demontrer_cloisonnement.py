@@ -134,14 +134,15 @@ def controler_comptes_metabase() -> list[str]:
         print(f"   {marque} {nom:10} {len(visibles)} tableau(x), {len(bases)} base(s)"
               f"   {GRIS}{', '.join(sorted(visibles))}{RAZ}")
 
-        # Un compte métier consulte des indicateurs ; il ne doit pas pouvoir
-        # écrire sa propre requête et lire le détail au grain du séjour.
+        # Un compte métier consulte des indicateurs enregistrés ; il ne doit
+        # pas pouvoir composer sa propre requête. On teste ici la permission
+        # elle-même, avec une requête que le compte de service autorise —
+        # le refus, s'il vient, est donc bien celui de Metabase.
         peut_analyser = nom == "admin"
         try:
             reponse = _appel("/dataset", "POST", {
                 "type": "native",
-                "native": {"query": "SELECT stay_id, patient_pseudo "
-                                    "FROM fact_sejour LIMIT 1"},
+                "native": {"query": "SELECT countIf(est_urgence) FROM fact_sejour"},
                 "database": 2}, session=session)
             obtenu = reponse.get("status") == "completed"
         except ErreurMetabase:
@@ -154,6 +155,78 @@ def controler_comptes_metabase() -> list[str]:
         marque = f"{VERT}✓{RAZ}" if conforme_sql else f"{ROUGE}✗{RAZ}"
         verdict = "peut composer ses requêtes" if obtenu else "ne peut pas composer de requête"
         print(f"   {marque} {'':10} {GRIS}{verdict}{RAZ}")
+
+    return echecs
+
+
+INTERDITS_PILOTAGE = (
+    ("SELECT patient_pseudo FROM gold_pilotage.fact_sejour LIMIT 1",
+     "lire le pseudonyme patient"),
+    ("SELECT uniqExact(patient_pseudo) FROM gold_pilotage.fact_sejour",
+     "dénombrer des patients"),
+    ("SELECT stay_id FROM gold_pilotage.fact_sejour LIMIT 1",
+     "identifier un séjour"),
+    ("SELECT * FROM gold_pilotage.dim_patient LIMIT 1",
+     "accéder à la dimension patient"),
+    ("SELECT * FROM gold_pilotage.fact_diagnostic LIMIT 1",
+     "accéder aux diagnostics"),
+    ("SELECT * FROM gold_pilotage.fact_sejour LIMIT 1",
+     "faire un SELECT *"),
+)
+
+REQUIS_PILOTAGE = (
+    ("SELECT round(avg(duree_jours), 2) FROM gold_pilotage.fact_sejour "
+     "WHERE est_en_cours = 0", "calculer la DMS"),
+    ("SELECT countIf(est_urgence) FROM gold_pilotage.fact_sejour",
+     "compter les passages aux urgences"),
+    ("SELECT countIf(en_alerte) FROM gold_pilotage.fact_releve",
+     "compter les relevés en alerte"),
+)
+
+
+def controler_droits_colonnes() -> list[str]:
+    """Le compte de pilotage n'a de droits que sur les colonnes utiles.
+
+    Un GRANT sur la base entière lui donnerait `patient_pseudo` et le grain
+    du séjour. Les droits sont donc posés colonne par colonne : la direction
+    consulte des indicateurs d'activité, elle n'a jamais à désigner un
+    patient ni à relier deux séjours entre eux.
+    """
+    print(f"\n  Droits au niveau colonne — compte de pilotage")
+    print(f"  {'─' * 66}")
+    ch = _client("eds_pilotage", exiger("CH_PILOTAGE_PASSWORD"))
+    echecs = []
+
+    for requete, libelle in INTERDITS_PILOTAGE:
+        try:
+            ch.command(requete)
+            echecs.append(f"pilotage peut {libelle}")
+            print(f"   {ROUGE}✗{RAZ} AUTORISÉ  {libelle}")
+        except Exception:
+            print(f"   {VERT}✓{RAZ} REFUSÉ    {libelle}")
+
+    # Le cloisonnement ne dépend pas du compte humain : c'est le compte de
+    # SERVICE de la connexion qui borne ce qu'on peut lire. Même
+    # l'administrateur, s'il passe par la connexion de pilotage, ne peut pas
+    # atteindre le pseudonyme.
+    from eds.metabase import _appel as _mb, ouvrir_session
+    reponse = _mb("/dataset", "POST", {
+        "type": "native",
+        "native": {"query": "SELECT patient_pseudo FROM fact_sejour LIMIT 1"},
+        "database": 2}, session=ouvrir_session())
+    bloque = reponse.get("status") != "completed"
+    if not bloque:
+        echecs.append("l'admin lit le pseudonyme via la connexion de pilotage")
+    marque = f"{VERT}✓{RAZ}" if bloque else f"{ROUGE}✗{RAZ}"
+    print(f"   {marque} REFUSÉ    même à l'administrateur, via cette connexion")
+
+    for requete, libelle in REQUIS_PILOTAGE:
+        try:
+            valeur = ch.command(requete)
+            print(f"   {VERT}✓{RAZ} POSSIBLE  {libelle} {GRIS}= {valeur}{RAZ}")
+        except Exception as erreur:
+            echecs.append(f"pilotage ne peut pas {libelle}")
+            print(f"   {ROUGE}✗{RAZ} IMPOSSIBLE {libelle} : {str(erreur)[:40]}")
 
     return echecs
 
@@ -196,6 +269,7 @@ def main() -> int:
     echecs += tester("eds_recherche", exiger("CH_RECHERCHE_PASSWORD"), "gold_recherche")
     echecs += controler_contenu_recherche()
     echecs += controler_comptes_metabase()
+    echecs += controler_droits_colonnes()
     echecs += controler_compte_exploitation()
 
     print()

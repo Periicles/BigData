@@ -19,13 +19,41 @@ CREATE USER IF NOT EXISTS eds_pilotage
 CREATE USER IF NOT EXISTS eds_recherche
     IDENTIFIED WITH sha256_password BY '{mdp_recherche}';
 
--- Le compte pilotage : les indicateurs hospitaliers, rien d'autre.
-GRANT SELECT ON gold_pilotage.* TO eds_pilotage;
+-- ── Compte de pilotage : droits AU NIVEAU COLONNE ───────────────────────
+--
+-- Un GRANT sur la base entière donnerait accès à `patient_pseudo` et au
+-- grain du séjour, très au-delà du besoin : la direction consulte des
+-- indicateurs d'activité, elle n'a jamais à désigner un patient.
+--
+-- Les droits sont donc limités aux seules colonnes que les tableaux de bord
+-- utilisent. Ni `patient_pseudo`, ni `stay_id`, ni les horodatages précis,
+-- ni les constantes brutes n'y figurent. `dim_patient` et `fact_diagnostic`
+-- ne sont pas accordées du tout.
+--
+-- Conséquence : même si ce compte parvenait à composer une requête, il ne
+-- pourrait pas dénombrer de patients ni relier deux séjours entre eux.
+GRANT SELECT(
+    service_code, date_admission, tranche_age,
+    duree_jours, est_en_cours, est_urgence,
+    est_sejour_index, suivi_readmission_30j
+) ON gold_pilotage.fact_sejour TO eds_pilotage;
 
--- Le compte recherche : les cohortes agrégées, rien d'autre.
--- Rappel : cette base ne contient ni birth_year, ni cohorte de moins de
--- 5 patients — le filtrage a eu lieu à l'écriture.
-GRANT SELECT ON gold_recherche.* TO eds_recherche;
+GRANT SELECT(
+    service_code, date_mesure,
+    alerte_fc, alerte_spo2, alerte_temp, en_alerte
+) ON gold_pilotage.fact_releve TO eds_pilotage;
+
+GRANT SELECT(service_code, service) ON gold_pilotage.dim_service TO eds_pilotage;
+
+-- ── Compte recherche ────────────────────────────────────────────────────
+-- Les deux tables de cohortes sont déjà agrégées, filtrées à k >= 5, et ne
+-- contiennent aucun pseudonyme. Les droits restent néanmoins limités aux
+-- colonnes exposées, par cohérence.
+GRANT SELECT(code_cim10, pathologie, nb_patients, nb_sejours)
+    ON gold_recherche.coh_prevalence TO eds_recherche;
+
+GRANT SELECT(code_cim10, pathologie, tranche_age, sexe, nb_patients)
+    ON gold_recherche.coh_description TO eds_recherche;
 
 
 -- ── Compte d'exploitation ───────────────────────────────────────────────
