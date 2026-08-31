@@ -90,15 +90,16 @@ Comptez une quinzaine de secondes pour le premier démarrage de Metabase, puis
 | Tableaux de bord | http://localhost:3000 |
 | Console SQL | http://localhost:8123/play — utilisateur `eds_admin` |
 
-**Trois comptes Metabase**, créés automatiquement. Un administrateur qui verrait
-les deux tableaux de bord ne démontrerait pas le cloisonnement : chaque profil
-métier a donc son propre compte, et ne voit que ce qui le concerne.
+**Deux profils métier, plus un compte technique.** Le sujet définit exactement
+deux publics — « Pilotage et recherche ne voient pas les mêmes données → droits
+d'accès distincts » — et chacun a son compte. L'administrateur n'est pas un
+profil métier : c'est le compte qui configure la plateforme.
 
-| Compte | Voit | Mot de passe |
-|---|---|---|
-| `admin@eds-chu.local` | les deux tableaux de bord, configure la plateforme | `MB_ADMIN_PASSWORD` |
-| `pilotage@eds-chu.local` | **uniquement** le tableau Pilotage et la base `gold_pilotage` | `MB_PILOTAGE_PASSWORD` |
-| `recherche@eds-chu.local` | **uniquement** le tableau Recherche et la base `gold_recherche` | `MB_RECHERCHE_PASSWORD` |
+| Compte | Rôle | Voit | Mot de passe |
+|---|---|---|---|
+| `pilotage@eds-chu.local` | **profil métier** | le tableau Pilotage et la base `gold_pilotage`, rien d'autre | `MB_PILOTAGE_PASSWORD` |
+| `recherche@eds-chu.local` | **profil métier** | le tableau Recherche et la base `gold_recherche`, rien d'autre | `MB_RECHERCHE_PASSWORD` |
+| `admin@eds-chu.local` | compte technique | les deux, et l'administration | `MB_ADMIN_PASSWORD` |
 
 La séparation joue à trois niveaux : permissions de collection (quel tableau est
 visible), permissions de données (quelle base est interrogeable), et surtout

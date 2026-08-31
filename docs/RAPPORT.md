@@ -80,10 +80,17 @@ contre l'intégralité du lake et échoue si l'une d'elles y apparaît. Il véri
 
 ### 2.3 Un cloisonnement physique, pas conventionnel
 
-Le sujet demande que « pilotage et recherche ne voient pas les mêmes données ».
+Le sujet définit **deux publics** et ce que chacun doit voir : au pilotage la
+durée de séjour, l'activité des urgences, la réadmission et la surveillance des
+constantes ; à la recherche la prévalence par pathologie et la description de
+cohorte. Il en tire une contrainte explicite — « pilotage et recherche ne voient
+pas les mêmes données → droits d'accès distincts ».
+
 Un filtre applicatif serait contournable par quiconque écrit sa propre requête.
-Nous avons donc séparé **physiquement** : deux bases ClickHouse, deux comptes,
-des droits disjoints. Ni l'un ni l'autre n'a accès aux couches bronze et silver,
+Nous avons donc séparé **physiquement** : deux bases ClickHouse, deux comptes de
+lecture, des droits disjoints. S'y ajoute un troisième compte, purement
+technique, qui configure la plateforme — il n'est pas un profil métier et le
+sujet ne le mentionne pas. Ni l'un ni l'autre n'a accès aux couches bronze et silver,
 ce qui interdit de remonter au détail.
 
 Le refus est prononcé par le moteur, **y compris depuis l'éditeur SQL de
@@ -423,12 +430,18 @@ choix délibéré — faire entrer des identités de patients dans un historique
 d'où elles ne peuvent plus être retirées, serait contradictoire avec l'objet
 même de ce projet.
 
-**Les faits exposent le grain de l'événement au compte pilotage.** Le modèle
-en étoile donne une liberté d'analyse réelle, mais `fact_sejour` contient une
-ligne par séjour avec son pseudonyme patient. Un utilisateur du pilotage peut
-donc compter des patients, ce qu'un entrepôt de KPI pré-agrégés interdisait.
-Les données sont pseudonymisées et l'accès est nominatif et restreint, mais le
-compromis mérite d'être acté avec le DPO.
+**Les faits exposent le grain de l'événement au compte pilotage — écart assumé
+au §6.** Le sujet décrit la couche gold comme des « indicateurs par usage », ce
+qui suggère des agrégats. Le modèle en étoile retenu va au-delà : `fact_sejour`
+contient une ligne par séjour avec son pseudonyme patient, si bien que le compte
+pilotage peut compter des patients, ce qu'un entrepôt de KPI pré-agrégés lui
+interdirait.
+
+Cet écart est délibéré : il achète une liberté d'analyse que les indicateurs
+figés ne permettent pas, et le croisement service × tranche d'âge du tableau de
+bord en est la démonstration. Les données restent pseudonymisées et l'accès
+nominatif et restreint. Le compromis mérite néanmoins d'être acté avec le DPO —
+c'est le seul point où la solution donne plus que ce que le sujet demandait.
 
 ### 3.4 Recommandations
 
