@@ -223,6 +223,9 @@ __marimo__/
 eds-chu-sujet/source-filestorage/
 landing/
 lake/
+# Le répertoire doit exister avant `docker compose up` : il est monté dans
+# ClickHouse. Sans lui, Docker le crée lui-même et le pipeline ne peut plus y écrire.
+!lake/.gitkeep
 
 # Le sel de pseudonymisation : sa fuite rendrait le hachage réversible.
 .env
