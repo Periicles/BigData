@@ -369,21 +369,28 @@ def _collection(session: str, nom: str) -> int:
 #
 # La restriction Metabase est donc une défense en profondeur, pas la
 # garantie principale.
-ACCES_RESTREINT = {"view-data": "unrestricted", "create-queries": "no"}
-ACCES_LECTURE = {
-    "view-data": "unrestricted",
-    "create-queries": "query-builder-and-native",
-    "download": {"schemas": "full"},
-}
+# Les comptes métier CONSULTENT des tableaux de bord ; ils n'interrogent pas
+# l'entrepôt. « create-queries: no » leur retire l'éditeur SQL et le
+# générateur de requêtes. Sans cela, un utilisateur du pilotage pourrait lire
+# fact_sejour ligne par ligne, avec le pseudonyme patient — bien au-delà de
+# son besoin, qui est de consulter des indicateurs.
+#
+# Ils conservent l'accès en lecture aux questions enregistrées de leur tableau
+# de bord : c'est l'objet des permissions de collection.
+ACCES_RESTITUTION = {"view-data": "unrestricted", "create-queries": "no"}
 
 
 def appliquer_permissions_donnees(
     session: str, bases: dict[str, int], groupes: dict[str, int]
 ) -> None:
-    """Chaque groupe ne peut composer de requêtes que sur sa propre base.
+    """Aucun groupe métier ne peut composer de requêtes.
 
-    « All Users » est restreint sur les deux bases : tout compte créé en
-    fait partie d'office et hériterait sinon d'un accès trop large.
+    Les comptes de pilotage et de recherche consultent leurs tableaux de
+    bord ; ils n'ont ni éditeur SQL ni générateur de requêtes. Seule
+    l'administration, membre du groupe Administrators, conserve ce droit.
+
+    « All Users » est restreint de la même façon : tout compte créé en fait
+    partie d'office et hériterait sinon d'un accès plus large.
     """
     graphe = _appel("/permissions/graph", session=session)
     groupe_tous = next(
@@ -392,16 +399,12 @@ def appliquer_permissions_donnees(
         if g["name"] == "All Users"
     )
 
-    nouveau = {
-        str(groupe_tous): {str(i): dict(ACCES_RESTREINT) for i in bases.values()}
-    }
-    for cle, groupe_id in groupes.items():
-        nouveau[str(groupe_id)] = {
-            str(base_id): (
-                dict(ACCES_LECTURE) if cle == autre else dict(ACCES_RESTREINT)
-            )
-            for autre, base_id in bases.items()
-        }
+    # Aucun groupe métier ne compose de requêtes, sur aucune base. Seul le
+    # groupe Administrators conserve ce droit, hors de ce graphe.
+    restriction = {str(i): dict(ACCES_RESTITUTION) for i in bases.values()}
+    nouveau = {str(groupe_tous): dict(restriction)}
+    for groupe_id in groupes.values():
+        nouveau[str(groupe_id)] = dict(restriction)
 
     graphe["groups"].update(nouveau)
     _appel(

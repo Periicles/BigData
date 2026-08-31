@@ -94,9 +94,18 @@ lecture, des droits disjoints.
 
 | Rôle | Vocation | Ce qu'il peut atteindre |
 |---|---|---|
-| Direction hospitalière | Piloter l'activité et la qualité des soins | `gold_pilotage` uniquement |
-| Recherche clinique | Décrire des cohortes, sous contrainte de petits effectifs | `gold_recherche` uniquement |
+| Direction hospitalière | Piloter l'activité et la qualité des soins | Le tableau de bord Pilotage. Aucune base, aucune requête |
+| Recherche clinique | Décrire des cohortes, sous contrainte de petits effectifs | Le tableau de bord Recherche. Aucune base, aucune requête |
 | Administration de l'entrepôt | Exploiter le pipeline, accorder les habilitations, assurer traçabilité et conformité | L'ensemble, y compris bronze et silver |
+
+**Un utilisateur métier consomme des indicateurs ; il n'interroge pas
+l'entrepôt.** Les deux comptes de restitution n'ont ni éditeur SQL ni générateur
+de requêtes — dans l'outil, ils ne voient aucune base de données. Cette
+distinction est essentielle ici : la couche gold contient les faits **au grain de
+l'événement**, avec le pseudonyme patient. Un compte de pilotage disposant de
+l'éditeur SQL pourrait lire `fact_sejour` ligne par ligne, ce qui excède
+largement son besoin. Il consulte donc des questions enregistrées, préparées et
+agrégées, sans jamais atteindre la table.
 
 Le troisième rôle n'est pas une commodité technique : dans un entrepôt de données
 de santé, quelqu'un doit pouvoir **remonter à la ligne d'origine** — pour

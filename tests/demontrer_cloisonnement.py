@@ -132,6 +132,27 @@ def controler_comptes_metabase() -> list[str]:
         print(f"   {marque} {nom:10} {len(visibles)} tableau(x), {len(bases)} base(s)"
               f"   {GRIS}{', '.join(sorted(visibles))}{RAZ}")
 
+        # Un compte métier consulte des indicateurs ; il ne doit pas pouvoir
+        # écrire sa propre requête et lire le détail au grain du séjour.
+        peut_analyser = nom == "admin"
+        try:
+            reponse = _appel("/dataset", "POST", {
+                "type": "native",
+                "native": {"query": "SELECT stay_id, patient_pseudo "
+                                    "FROM fact_sejour LIMIT 1"},
+                "database": 2}, session=session)
+            obtenu = reponse.get("status") == "completed"
+        except ErreurMetabase:
+            obtenu = False
+
+        conforme_sql = obtenu == peut_analyser
+        if not conforme_sql:
+            echecs.append(f"{nom} : requête libre {'autorisée' if obtenu else 'refusée'}, "
+                          f"attendu l'inverse")
+        marque = f"{VERT}✓{RAZ}" if conforme_sql else f"{ROUGE}✗{RAZ}"
+        verdict = "peut composer ses requêtes" if obtenu else "ne peut pas composer de requête"
+        print(f"   {marque} {'':10} {GRIS}{verdict}{RAZ}")
+
     return echecs
 
 

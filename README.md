@@ -92,23 +92,29 @@ Comptez une quinzaine de secondes pour le premier démarrage de Metabase, puis
 
 **Trois rôles, trois vocations distinctes.** Le sujet définit deux publics
 métier — « pilotage et recherche ne voient pas les mêmes données → droits
-d'accès distincts ». S'y ajoute l'administration de l'entrepôt, qui est un rôle
-à part entière dans un EDS : c'est lui qui exploite le pipeline, accorde les
+d'accès distincts ». S'y ajoute l'administration de l'entrepôt, rôle à part
+entière dans un EDS : c'est elle qui exploite le pipeline, accorde les
 habilitations et répond d'une demande d'effacement.
 
-| Compte | Vocation | Périmètre |
+| Compte | Vocation | Ce qu'il peut faire |
 |---|---|---|
-| `pilotage@eds-chu.local` | **Direction hospitalière** — piloter l'activité et la qualité des soins | Tableau Pilotage, base `gold_pilotage`. Rien d'autre. |
-| `recherche@eds-chu.local` | **Recherche clinique** — décrire des cohortes de patients | Tableau Recherche, base `gold_recherche`. Rien d'autre. |
-| `admin@eds-chu.local` | **Administration de l'entrepôt** — exploiter le pipeline, gérer les habilitations, assurer traçabilité et conformité | Les deux tableaux, l'administration de la plateforme, et l'accès aux couches techniques via la console SQL |
+| `pilotage@eds-chu.local` | **Direction hospitalière** — piloter l'activité et la qualité des soins | Consulter le tableau Pilotage. **Rien d'autre** : aucune base accessible, aucune requête possible |
+| `recherche@eds-chu.local` | **Recherche clinique** — décrire des cohortes | Consulter le tableau Recherche. **Rien d'autre** |
+| `admin@eds-chu.local` | **Administration de l'entrepôt** — exploiter, habiliter, tracer, assurer la conformité | Tout : les deux tableaux, les deux bases, la composition de requêtes, et les couches techniques via la console SQL |
 
 Mots de passe : `MB_PILOTAGE_PASSWORD`, `MB_RECHERCHE_PASSWORD`, `MB_ADMIN_PASSWORD`
 dans `.env`.
 
-> L'administrateur est le **seul** à pouvoir atteindre le détail pseudonymisé des
-> couches bronze et silver. C'est cohérent avec sa vocation : lui seul a besoin de
-> remonter à la ligne d'origine pour traiter un incident ou une demande
-> d'effacement. Ni le pilotage ni la recherche ne le peuvent.
+> **Un utilisateur métier consomme des indicateurs, il n'interroge pas
+> l'entrepôt.** Les comptes de pilotage et de recherche n'ont ni éditeur SQL ni
+> générateur de requêtes : dans Metabase, ils ne voient même aucune base de
+> données. Sans cette restriction, un utilisateur du pilotage pourrait lire
+> `fact_sejour` ligne par ligne, avec le pseudonyme patient — bien au-delà de son
+> besoin.
+>
+> L'administrateur est le **seul** à atteindre le détail des couches bronze et
+> silver, ce qui correspond à sa vocation : lui seul a besoin de remonter à la
+> ligne d'origine pour traiter un incident ou une demande d'effacement.
 
 La séparation joue à trois niveaux : permissions de collection (quel tableau est
 visible), permissions de données (quelle base est interrogeable), et surtout
