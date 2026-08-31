@@ -184,6 +184,7 @@ des propriétés annoncées.
 ```bash
 .venv/bin/python -m tests.verifier_pseudonymisation   # aucune identité dans le lake
 .venv/bin/python -m tests.verifier_qualite            # bronze = silver + rejets
+.venv/bin/python -m tests.verifier_rgpd               # les 5 contraintes du sujet
 .venv/bin/python -m tests.demontrer_cloisonnement     # droits d'accès disjoints
 .venv/bin/python -m tests.demontrer_reprise           # erreurs et reprise sur incident
 ```
@@ -192,6 +193,7 @@ des propriétés annoncées.
 |---|---|
 | `verifier_pseudonymisation` | Les 17 503 valeurs identifiantes de la source sont introuvables dans le lake ; aucune collision de pseudonyme ; les jointures survivent |
 | `verifier_qualite` | Équation de conservation par source, déduplication, règles métier, intégrité référentielle — 15 contrôles |
+| `verifier_rgpd` | Les cinq contraintes RGPD, vérifiées sur l'entrepôt réel : pseudonymisation, minimisation, cloisonnement, petits effectifs, traçabilité — plus l'absence de donnée personnelle dans les journaux |
 | `demontrer_cloisonnement` | Chaque compte accède à sa base et se voit refuser les trois autres, par le moteur |
 | `demontrer_reprise` | Erreurs détectées, tracées, entrepôt cohérent, reprise par simple relance |
 
@@ -232,6 +234,36 @@ docker compose down -v && docker compose up -d
 
 ---
 
+## Documentation
+
+| Document | Contenu |
+|---|---|
+| [`docs/RAPPORT.md`](docs/RAPPORT.md) | **Le rapport de conception** — besoin métier, choix et justifications, architecture, limites et recommandations. Le document à lire en premier. |
+| [`exploration/RAPPORT-EXPLORATION.md`](exploration/RAPPORT-EXPLORATION.md) | L'état des lieux des sources, établi **avant** toute décision d'architecture : volumétrie, anomalies chiffrées, mesure du risque de ré-identification. |
+| [`docs/CAPTURES.md`](docs/CAPTURES.md) | Les captures à réaliser pour le rapport, avec la commande ou l'URL de chacune et le critère qu'elle sert. |
+| [`sql/99_verifications.sql`](sql/99_verifications.sql) | Requêtes d'inspection à exécuter dans la console SQL, commentées. |
+
+## Conformité RGPD
+
+Les cinq contraintes du sujet sont vérifiables en une commande
+(`python -m tests.verifier_rgpd`) :
+
+| Contrainte | Mise en œuvre | Où |
+|---|---|---|
+| **Pseudonymisation** | HMAC-SHA256 salé appliqué **pendant la copie** : les identités ne sont écrites nulle part. Aucune colonne `nir`, `nom`, `prenom`, `birth_date` ni `patient_id` n'existe dans l'entrepôt. | `eds/pseudo.py` |
+| **Minimisation** | Trois colonnes supprimées à la source, date de naissance généralisée à l'année. La base recherche n'expose ni `birth_year`, ni `patient_pseudo`, ni `region`. | `eds/pseudo.py`, `sql/31_gold_transform.sql` |
+| **Cloisonnement** | Deux bases séparées, quatre comptes de service bornés, droits posés **colonne par colonne** sur la restitution. Le refus vient du moteur. | `sql/50_droits.sql` |
+| **Petits effectifs** | `HAVING count(DISTINCT patient) >= 5` appliqué **à l'écriture** : aucune cohorte sous seuil n'existe dans la base. | `sql/31_gold_transform.sql` |
+| **Traçabilité** | Chaque ligne porte son fichier d'origine, son horodatage d'ingestion et l'identifiant du run. Le journal `ops.executions` conserve chaque étape, succès comme échec. | `sql/10_bronze.sql`, `sql/60_ops.sql` |
+
+> **Les journaux ne contiennent aucune donnée personnelle** — ni pseudonyme, ni
+> identifiant patient. C'est vérifié automatiquement, sur le fichier de log comme
+> sur la table `ops.executions`.
+>
+> **Le sel de pseudonymisation n'est pas versionné.** Sa perte rend tout
+> rapprochement avec la source définitivement impossible — c'est la propriété
+> recherchée, et elle distingue une pseudonymisation d'un simple encodage.
+
 ## Organisation du dépôt
 
 ```
@@ -259,7 +291,7 @@ sql/                     toute la transformation, versionnée
   60_ops.sql             journal d'exécution
   99_verifications.sql   requêtes d'inspection pour la console SQL
 
-tests/                   les quatre démonstrations
+tests/                   les cinq contrôles et démonstrations
 exploration/             profilage initial des sources (DuckDB)
 metabase/dashboards.json export des tableaux de bord
 ops/crontab.example      planification
