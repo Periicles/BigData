@@ -130,6 +130,64 @@ distincts, partageant des dimensions conformes**.
 
 Dimensions : `dim_patient`, `dim_service`, `dim_cim10`.
 
+```mermaid
+erDiagram
+    dim_patient  ||--o{ fact_sejour     : "patient_pseudo"
+    dim_service  ||--o{ fact_sejour     : "service_code"
+    dim_patient  ||--o{ fact_diagnostic : "patient_pseudo"
+    dim_cim10    ||--o{ fact_diagnostic : "code_cim10"
+    dim_service  ||--o{ fact_diagnostic : "service_code"
+    dim_patient  ||--o{ fact_releve     : "patient_pseudo"
+    dim_service  ||--o{ fact_releve     : "service_code"
+
+    dim_patient {
+        string patient_pseudo PK "pseudonyme HMAC salé"
+        int    birth_year "année seule"
+        string sexe
+        string region
+    }
+    dim_service {
+        string service_code PK
+        string service "libellé"
+    }
+    dim_cim10 {
+        string code_cim10 PK
+        string pathologie "libellé"
+    }
+
+    fact_sejour {
+        string stay_id PK "GRAIN 1 sejour - 14864"
+        string patient_pseudo FK
+        string service_code FK
+        date   date_admission "axe temporel"
+        string tranche_age "attribut du fait"
+        float  duree_jours "MESURE NULL si en cours"
+        uint8  est_urgence "MESURE"
+        uint8  est_sejour_index "MESURE denominateur"
+        uint8  suivi_readmission_30j "MESURE numerateur"
+    }
+    fact_diagnostic {
+        string stay_id "GRAIN 1 code pose - 37040"
+        string patient_pseudo FK "denormalise"
+        string code_cim10 FK
+        string service_code FK
+        date   date_admission "axe temporel"
+        uint8  est_principal "MESURE"
+        string tranche_age "denormalise"
+        string sexe "denormalise"
+    }
+    fact_releve {
+        string stay_id "GRAIN 1 mesure - 64799"
+        string patient_pseudo FK
+        string service_code FK
+        date   date_mesure "axe temporel - la mesure jamais le depot"
+        int    heart_rate "MESURE"
+        int    spo2 "MESURE"
+        float  temp_c "MESURE"
+        uint8  en_alerte "MESURE"
+    }
+```
+
 **Pourquoi trois faits et non un seul.** Les grains sont incompatibles : un
 séjour porte 1 à 4 diagnostics et 0 à n relevés. Les fusionner en une table
 unique multiplierait les lignes et fausserait toute somme — c'est le *fan trap*
