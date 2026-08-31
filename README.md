@@ -114,7 +114,24 @@ dans `.env`.
 >
 > L'administrateur est le **seul** à atteindre le détail des couches bronze et
 > silver, ce qui correspond à sa vocation : lui seul a besoin de remonter à la
-> ligne d'origine pour traiter un incident ou une demande d'effacement.
+> ligne d'origine pour traiter un incident ou une demande d'effacement. Il
+> dispose pour cela d'une troisième connexion — *EDS — Exploitation* — qui donne
+> accès à `bronze`, `silver` et au journal `ops`.
+
+**Quatre comptes ClickHouse, un par usage.** Ce sont des comptes de service, à ne
+pas confondre avec les trois rôles ci-dessus.
+
+| Compte ClickHouse | Usage | Droits |
+|---|---|---|
+| `eds_admin` | le pipeline | tous — il crée les tables et applique les habilitations |
+| `eds_pilotage` | connexion Metabase Pilotage | `SELECT` sur `gold_pilotage` |
+| `eds_recherche` | connexion Metabase Recherche | `SELECT` sur `gold_recherche` |
+| `eds_exploitation` | connexion Metabase Exploitation | `SELECT` sur `bronze`, `silver`, `ops` — **lecture seule** |
+
+> Le compte d'investigation n'est **pas** celui du pipeline. `eds_admin` peut
+> créer et supprimer des bases : ce pouvoir n'a pas sa place derrière une
+> interface web. `eds_exploitation` ne peut rien écrire, quelle que soit la
+> requête saisie — le moteur refuse.
 
 La séparation joue à trois niveaux : permissions de collection (quel tableau est
 visible), permissions de données (quelle base est interrogeable), et surtout

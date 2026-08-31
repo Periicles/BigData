@@ -113,7 +113,19 @@ diagnostiquer un incident, produire une piste d'audit, ou exécuter une demande
 d'effacement au titre du RGPD. C'est précisément ce que les colonnes
 `_fichier_source` et `_run_id` rendent possible, et l'administrateur est le seul
 à y avoir accès. Ni le pilotage ni la recherche ne peuvent atteindre le détail,
-fût-il pseudonymisé. Ni l'un ni l'autre n'a accès aux couches bronze et silver,
+fût-il pseudonymisé.
+
+**Quatre comptes de service ClickHouse**, à ne pas confondre avec les trois
+rôles : `eds_admin` pour le pipeline, `eds_pilotage` et `eds_recherche` pour les
+deux connexions de restitution, et `eds_exploitation` — en **lecture seule** sur
+`bronze`, `silver` et `ops` — pour l'investigation.
+
+Ce dernier mérite d'être justifié. L'administration aurait pu investiguer avec le
+compte du pipeline, qui a tous les droits. Nous ne l'avons pas fait :
+`eds_admin` peut créer et supprimer des bases, et ce pouvoir n'a pas sa place
+derrière une interface web où une requête maladroite suffirait. Le compte
+d'exploitation applique le moindre privilège — il lit tout ce qui est nécessaire
+à une investigation, et le moteur lui refuse toute écriture. Ni l'un ni l'autre n'a accès aux couches bronze et silver,
 ce qui interdit de remonter au détail.
 
 Le refus est prononcé par le moteur, **y compris depuis l'éditeur SQL de

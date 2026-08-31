@@ -296,6 +296,7 @@ class Pipeline:
                 "50_droits.sql",
                 mdp_pilotage=exiger("CH_PILOTAGE_PASSWORD"),
                 mdp_recherche=exiger("CH_RECHERCHE_PASSWORD"),
+                mdp_exploitation=exiger("CH_EXPLOITATION_PASSWORD"),
             )
 
     # ── exécution ────────────────────────────────────────────────────────

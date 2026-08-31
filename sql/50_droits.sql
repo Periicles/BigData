@@ -26,3 +26,21 @@ GRANT SELECT ON gold_pilotage.* TO eds_pilotage;
 -- Rappel : cette base ne contient ni birth_year, ni cohorte de moins de
 -- 5 patients — le filtrage a eu lieu à l'écriture.
 GRANT SELECT ON gold_recherche.* TO eds_recherche;
+
+
+-- ── Compte d'exploitation ───────────────────────────────────────────────
+-- L'administrateur a besoin d'investiguer sur les couches techniques —
+-- retrouver la ligne d'origine d'un incident, préparer une piste d'audit,
+-- instruire une demande d'effacement.
+--
+-- Il n'utilise PAS pour cela le compte du pipeline : celui-ci peut créer et
+-- supprimer des bases, ce qui n'a pas sa place derrière une interface web.
+-- Un compte distinct, en LECTURE SEULE sur les couches techniques, applique
+-- le principe de moindre privilège : depuis Metabase, aucune écriture n'est
+-- possible, quelle que soit la requête saisie.
+CREATE USER IF NOT EXISTS eds_exploitation
+    IDENTIFIED WITH sha256_password BY '{mdp_exploitation}';
+
+GRANT SELECT ON bronze.* TO eds_exploitation;
+GRANT SELECT ON silver.* TO eds_exploitation;
+GRANT SELECT ON ops.*    TO eds_exploitation;

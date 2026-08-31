@@ -87,9 +87,8 @@ def ouvrir_session() -> str:
     ]
 
 
-def declarer_base(
-    session: str, nom: str, base_ch: str, utilisateur: str, mot_de_passe: str
-) -> int:
+def declarer_base(session: str, nom: str, base_ch: str, utilisateur: str,
+                  mot_de_passe: str, toutes_bases: bool = False) -> int:
     """Déclare une base ClickHouse dans Metabase, ou retourne l'existante."""
     for base in _appel("/database", session=session)["data"]:
         if base["name"] == nom:
@@ -108,7 +107,9 @@ def declarer_base(
                 "password": mot_de_passe,
                 "dbname": base_ch,
                 "ssl": False,
-                "scan-all-databases": False,
+                # Le compte d'exploitation couvre trois bases : on laisse
+                # Metabase les découvrir toutes plutôt que d'en figer une.
+                "scan-all-databases": toutes_bases,
             },
             "is_full_sync": True,
         },
@@ -135,6 +136,18 @@ def configurer() -> dict[str, int]:
             "gold_recherche",
             "eds_recherche",
             exiger("CH_RECHERCHE_PASSWORD"),
+        ),
+        # Réservée à l'administration : les couches techniques, en lecture
+        # seule. Elle permet d'investiguer un incident ou d'instruire une
+        # demande d'effacement sans quitter l'outil, et sans utiliser le
+        # compte du pipeline, qui peut écrire.
+        "exploitation": declarer_base(
+            session,
+            "EDS — Exploitation (bronze, silver, journal)",
+            "silver",
+            "eds_exploitation",
+            exiger("CH_EXPLOITATION_PASSWORD"),
+            toutes_bases=True,
         ),
     }, session
 

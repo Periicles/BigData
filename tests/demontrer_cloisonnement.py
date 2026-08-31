@@ -16,6 +16,8 @@ from eds.config import exiger
 
 VERT, ROUGE, GRIS, RAZ = "\033[32m", "\033[31m", "\033[90m", "\033[0m"
 
+CIBLES_EXPLOITATION = ("bronze.sejours", "silver.rejets", "ops.executions")
+
 CIBLES = [
     ("gold_pilotage.fact_sejour", "faits de séjour (pilotage)"),
     ("gold_recherche.coh_prevalence", "cohortes de recherche"),
@@ -156,12 +158,45 @@ def controler_comptes_metabase() -> list[str]:
     return echecs
 
 
+def controler_compte_exploitation() -> list[str]:
+    """Le compte d'investigation lit les couches techniques, sans écrire.
+
+    L'administration doit pouvoir remonter à la ligne d'origine — incident,
+    piste d'audit, demande d'effacement. Elle n'utilise pas pour autant le
+    compte du pipeline, qui peut créer et supprimer des bases : un compte
+    distinct, en lecture seule, applique le moindre privilège.
+    """
+    print(f"\n  Compte d'exploitation (investigation technique)")
+    print(f"  {'─' * 66}")
+    ch = _client("eds_exploitation", exiger("CH_EXPLOITATION_PASSWORD"))
+    echecs = []
+
+    for table in CIBLES_EXPLOITATION:
+        try:
+            n = int(ch.command(f"SELECT count() FROM {table}"))
+            print(f"   {VERT}✓{RAZ} LECTURE   {table:24} {GRIS}{n} lignes{RAZ}")
+        except Exception as erreur:
+            echecs.append(f"exploitation ne peut pas lire {table}")
+            print(f"   {ROUGE}✗{RAZ} {table} illisible : {str(erreur)[:50]}")
+
+    # Le moindre privilège : aucune écriture, quelle que soit la requête.
+    try:
+        ch.command("TRUNCATE TABLE bronze.sejours")
+        echecs.append("exploitation a pu ÉCRIRE — moindre privilège non respecté")
+        print(f"   {ROUGE}✗{RAZ} ÉCRITURE  autorisée — moindre privilège non respecté")
+    except Exception:
+        print(f"   {VERT}✓{RAZ} ÉCRITURE  refusée par le moteur {GRIS}(lecture seule){RAZ}")
+
+    return echecs
+
+
 def main() -> int:
     print("\n═══ DÉMONSTRATION DU CLOISONNEMENT DES DROITS ═══")
     echecs = tester("eds_pilotage", exiger("CH_PILOTAGE_PASSWORD"), "gold_pilotage")
     echecs += tester("eds_recherche", exiger("CH_RECHERCHE_PASSWORD"), "gold_recherche")
     echecs += controler_contenu_recherche()
     echecs += controler_comptes_metabase()
+    echecs += controler_compte_exploitation()
 
     print()
     if echecs:
