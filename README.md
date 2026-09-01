@@ -254,7 +254,6 @@ docker compose down -v && docker compose up -d
 |---|---|
 | [`docs/RAPPORT.md`](docs/RAPPORT.md) | **Le rapport de conception** — besoin métier, choix et justifications, architecture, limites et recommandations. Le document à lire en premier. |
 | [`exploration/RAPPORT-EXPLORATION.md`](exploration/RAPPORT-EXPLORATION.md) | L'état des lieux des sources, établi **avant** toute décision d'architecture : volumétrie, anomalies chiffrées, mesure du risque de ré-identification. |
-| [`docs/CAPTURES.md`](docs/CAPTURES.md) | Les captures à réaliser pour le rapport, avec la commande ou l'URL de chacune et le critère qu'elle sert. |
 | [`sql/99_verifications.sql`](sql/99_verifications.sql) | Requêtes d'inspection à exécuter dans la console SQL, commentées. |
 
 ## Conformité RGPD
