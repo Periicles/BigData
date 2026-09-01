@@ -312,6 +312,28 @@ def reprise() -> list[str]:
     if not ok:
         echecs.append("la relance n'a pas rétabli l'état")
     print(f"     {VERT if ok else ROUGE}code de sortie {code}{RAZ} — entrepôt rétabli à l'identique\n")
+
+    # Le cas qui compte vraiment : un jour à moitié chargé. Le chargement
+    # traite les sources l'une après l'autre ; si l'une échoue après les
+    # séjours, le jour paraît ingéré alors qu'il lui manque une partition.
+    # Une relance qui le sauterait perdrait ces lignes définitivement.
+    print("  ⑥ Chargement partiel : la relance retrouve-t-elle la source manquante ?")
+    jour, table = "2026-08-27", "bronze.monitoring"
+    complet = int(ch.command(
+        f"SELECT count() FROM {table} WHERE _jour_depot = toDate('{jour}')"))
+    ch.command(f"ALTER TABLE {table} DROP PARTITION '{jour}'")
+    ampute = int(ch.command(
+        f"SELECT count() FROM {table} WHERE _jour_depot = toDate('{jour}')"))
+    print(f"     {GRIS}{table} du {jour} : {complet} -> {ampute} lignes{RAZ}")
+
+    executer_pipeline([])
+    retrouve = int(ch.command(
+        f"SELECT count() FROM {table} WHERE _jour_depot = toDate('{jour}')"))
+    repare = retrouve == complet
+    if not repare:
+        echecs.append(f"chargement partiel non réparé : {retrouve}/{complet} lignes")
+    print(f"     {VERT if repare else ROUGE}{retrouve} lignes{RAZ} — "
+          f"{'partition retrouvée sans intervention' if repare else 'PERTE SILENCIEUSE'}\n")
     return echecs
 
 

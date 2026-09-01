@@ -6,17 +6,21 @@
 -- rejeu produit exactement le même état. La limite de ce choix est documentée
 -- dans le rapport : il ne tiendrait pas sur plusieurs années d'historique.
 --
--- Les tables sont RECRÉÉES et non pas seulement créées si absentes : silver
--- étant entièrement dérivé de bronze, son schéma peut évoluer sans migration
--- ni perte. Un ajout de colonne prend effet à la première exécution suivante.
+-- Créées si absentes, JAMAIS détruites ici : l'étape de schéma s'exécute au
+-- début de chaque run, y compris ceux qui échouent ensuite. Un DROP y
+-- laisserait l'entrepôt vide après un incident, alors que la reprise doit le
+-- laisser cohérent — c'est ce que vérifie `tests.demontrer reprise`.
+--
+-- Silver étant dérivé, faire évoluer son schéma reste sans coût : supprimer
+-- les tables une fois suffit, l'exécution suivante les reconstruit depuis
+-- bronze, sans perte ni migration.
 --
 -- TRAÇABILITÉ — chaque ligne porte le jour de dépôt et le fichier dont elle
 -- provient, recopiés depuis bronze. On répond donc à « d'où vient cette
 -- ligne ? » sans jointure, y compris pour les lignes écartées.
 -- ─────────────────────────────────────────────────────────────────────────
-DROP TABLE IF EXISTS silver.patients;
 
-CREATE TABLE silver.patients (
+CREATE TABLE IF NOT EXISTS silver.patients (
     patient_pseudo String,
     birth_year UInt16,
     sex LowCardinality(String),
@@ -31,9 +35,7 @@ CREATE TABLE silver.patients (
 ORDER BY
     (patient_pseudo);
 
-DROP TABLE IF EXISTS silver.sejours;
-
-CREATE TABLE silver.sejours (
+CREATE TABLE IF NOT EXISTS silver.sejours (
     stay_id String,
     patient_pseudo String,
     service_code LowCardinality(String),
@@ -57,9 +59,7 @@ CREATE TABLE silver.sejours (
 ORDER BY
     (stay_id);
 
-DROP TABLE IF EXISTS silver.diagnostics;
-
-CREATE TABLE silver.diagnostics (
+CREATE TABLE IF NOT EXISTS silver.diagnostics (
     stay_id String,
     code_cim10 LowCardinality(String),
     type_diag LowCardinality(String),
@@ -73,9 +73,7 @@ CREATE TABLE silver.diagnostics (
 ORDER BY
     (stay_id, code_cim10);
 
-DROP TABLE IF EXISTS silver.monitoring;
-
-CREATE TABLE silver.monitoring (
+CREATE TABLE IF NOT EXISTS silver.monitoring (
     stay_id String,
     ts DateTime,
     heart_rate Int16,
@@ -100,9 +98,8 @@ ORDER BY
 -- exclusions comptables et interrogeables, au lieu de silencieuses. Elle porte
 -- la même traçabilité que les autres : on sait de quel fichier venait chaque
 -- ligne écartée, ce qui permet de remonter à la source d'un problème qualité.
-DROP TABLE IF EXISTS silver.rejets;
 
-CREATE TABLE silver.rejets (
+CREATE TABLE IF NOT EXISTS silver.rejets (
     source LowCardinality(String),
     cle String,
     motif LowCardinality(String),

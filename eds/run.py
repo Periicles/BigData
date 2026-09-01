@@ -23,6 +23,7 @@ import logging
 import sys
 import time
 import uuid
+from collections import defaultdict
 from contextlib import contextmanager
 from datetime import date, datetime
 
@@ -30,8 +31,9 @@ from clickhouse_connect.driver.exceptions import DatabaseError, OperationalError
 
 from eds import journal as mod_journal
 from eds.config import LAKE, exiger
-from eds.lake import copier_jour, jours_disponibles
+from eds.lake import copier_jour, jours_disponibles, lister_jours
 from eds.warehouse import (
+    CHARGEURS,
     charger_bronze_jour,
     charger_referentiels,
     client,
@@ -176,10 +178,29 @@ class Pipeline:
 
     # ── état ─────────────────────────────────────────────────────────────
     def jours_deja_ingeres(self) -> set[str]:
-        lignes = self.ch.query(
-            "SELECT DISTINCT toString(_jour_depot) FROM bronze.sejours"
-        ).result_rows
-        return {l[0] for l in lignes}
+        """Jours dont TOUTES les sources déposées sont chargées en bronze.
+
+        Interroger la seule table des séjours ne suffit pas. Le chargement
+        traite les sources l'une après l'autre : si l'une échoue après les
+        séjours, sa partition manque alors que le jour paraît ingéré. La
+        relance le sauterait, et les lignes absentes ne reviendraient jamais
+        — une perte silencieuse, alors que la reprise est censée n'être
+        qu'une relance. On exige donc que chaque source déposée ce jour-là
+        soit effectivement présente.
+        """
+        attendues: dict[str, set[str]] = defaultdict(set)
+        for source in CHARGEURS:
+            for jour in lister_jours(source):
+                attendues[jour].add(source)
+
+        chargees: dict[str, set[str]] = defaultdict(set)
+        for source, (table, _) in CHARGEURS.items():
+            for (jour,) in self.ch.query(
+                f"SELECT DISTINCT toString(_jour_depot) FROM {table}"
+            ).result_rows:
+                chargees[jour].add(source)
+
+        return {j for j, sources in attendues.items() if chargees[j] >= sources}
 
     def jours_a_traiter(self, tout: bool) -> list[str]:
         disponibles = jours_disponibles()
