@@ -337,14 +337,14 @@ def installer() -> dict[str, str]:
 COMPTES = {
     "pilotage": {
         "groupe": "Pilotage hospitalier",
-        "courriel": "pilotage@eds-chu.local",
+        "variable_courriel": "MB_PILOTAGE_EMAIL",
         "prenom": "Direction",
         "nom": "Pilotage",
         "variable_mdp": "MB_PILOTAGE_PASSWORD",
     },
     "recherche": {
         "groupe": "Recherche clinique",
-        "courriel": "recherche@eds-chu.local",
+        "variable_courriel": "MB_RECHERCHE_EMAIL",
         "prenom": "Equipe",
         "nom": "Recherche",
         "variable_mdp": "MB_RECHERCHE_PASSWORD",
@@ -468,9 +468,10 @@ def appliquer_permissions_collections(
 
 def creer_utilisateur(session: str, compte: dict, groupe_id: int) -> None:
     """Crée le compte s'il n'existe pas, en l'affectant à son seul groupe."""
+    courriel = exiger(compte["variable_courriel"])
     existants = _appel("/user", session=session)
     liste = existants["data"] if isinstance(existants, dict) else existants
-    if any(u["email"] == compte["courriel"] for u in liste):
+    if any(u["email"] == courriel for u in liste):
         return
     # Metabase impose que tout compte reste membre de « All Users » : ce
     # groupe ne se quitte pas. On l'ajoute donc au groupe métier, sans le
@@ -487,13 +488,13 @@ def creer_utilisateur(session: str, compte: dict, groupe_id: int) -> None:
         {
             "first_name": compte["prenom"],
             "last_name": compte["nom"],
-            "email": compte["courriel"],
+            "email": courriel,
             "password": exiger(compte["variable_mdp"]),
             "user_group_memberships": [{"id": groupe_tous}, {"id": groupe_id}],
         },
         session=session,
     )
-    LOG.info("compte créé", extra={"source": compte["courriel"]})
+    LOG.info("compte créé", extra={"source": courriel})
 
 
 def exporter(session: str | None = None) -> Path:

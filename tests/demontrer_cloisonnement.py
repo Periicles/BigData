@@ -109,9 +109,9 @@ def controler_comptes_metabase() -> list[str]:
     attendus = {
         "admin":     (exiger("MB_ADMIN_EMAIL"), exiger("MB_ADMIN_PASSWORD"),
                       {"Pilotage hospitalier", "Recherche clinique"}),
-        "pilotage":  ("pilotage@eds-chu.local", exiger("MB_PILOTAGE_PASSWORD"),
+        "pilotage":  (exiger("MB_PILOTAGE_EMAIL"), exiger("MB_PILOTAGE_PASSWORD"),
                       {"Pilotage hospitalier"}),
-        "recherche": ("recherche@eds-chu.local", exiger("MB_RECHERCHE_PASSWORD"),
+        "recherche": (exiger("MB_RECHERCHE_EMAIL"), exiger("MB_RECHERCHE_PASSWORD"),
                       {"Recherche clinique"}),
     }
 

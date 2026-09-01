@@ -56,17 +56,27 @@ source-filestorage/     dépôt du CHU, lecture seule (identités en clair)
 ## Démarrage
 
 ```bash
-# 1. Secrets — génère un sel de 256 bits et trois mots de passe
-cp .env.example .env
+# 1. Secrets — génère le sel de 256 bits et les sept mots de passe
 python3 - <<'EOF'
 import secrets, pathlib
-pathlib.Path(".env").write_text(f"""CH_ADMIN_USER=eds_admin
-CH_ADMIN_PASSWORD={secrets.token_urlsafe(24)}
-CH_PILOTAGE_PASSWORD={secrets.token_urlsafe(24)}
-CH_RECHERCHE_PASSWORD={secrets.token_urlsafe(24)}
+mdp = lambda n=24: secrets.token_urlsafe(n)
+pathlib.Path(".env").write_text(f"""# ── ClickHouse ──
+CH_ADMIN_USER=eds_admin
+CH_ADMIN_PASSWORD={mdp()}
+CH_PILOTAGE_PASSWORD={mdp()}
+CH_RECHERCHE_PASSWORD={mdp()}
+CH_EXPLOITATION_PASSWORD={mdp()}
+
+# ── Pseudonymisation ──
 EDS_PSEUDO_SALT={secrets.token_hex(32)}
+
+# ── Metabase ──
 MB_ADMIN_EMAIL=admin@eds-chu.local
-MB_ADMIN_PASSWORD={secrets.token_urlsafe(16)}
+MB_ADMIN_PASSWORD={mdp(16)}
+MB_PILOTAGE_EMAIL=pilotage@eds-chu.local
+MB_PILOTAGE_PASSWORD={mdp(16)}
+MB_RECHERCHE_EMAIL=recherche@eds-chu.local
+MB_RECHERCHE_PASSWORD={mdp(16)}
 """)
 EOF
 
@@ -102,8 +112,8 @@ habilitations et répond d'une demande d'effacement.
 | `recherche@eds-chu.local` | **Recherche clinique** — décrire des cohortes | Consulter le tableau Recherche. **Rien d'autre** |
 | `admin@eds-chu.local` | **Administration de l'entrepôt** — exploiter, habiliter, tracer, assurer la conformité | Tout : les deux tableaux, les deux bases, la composition de requêtes, et les couches techniques via la console SQL |
 
-Mots de passe : `MB_PILOTAGE_PASSWORD`, `MB_RECHERCHE_PASSWORD`, `MB_ADMIN_PASSWORD`
-dans `.env`.
+Adresses et mots de passe dans `.env` — `MB_*_EMAIL` et `MB_*_PASSWORD` pour
+chacun des trois comptes. Aucune n'est écrite en dur dans le code.
 
 > **Un utilisateur métier consomme des indicateurs, il n'interroge pas
 > l'entrepôt.** Les comptes de pilotage et de recherche n'ont ni éditeur SQL ni
