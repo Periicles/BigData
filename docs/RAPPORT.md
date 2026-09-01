@@ -445,11 +445,37 @@ toute écriture persistante.
 
 ### 3.2 Traçabilité
 
-Chaque ligne de bronze et de silver porte le jour de dépôt, l'horodatage
-d'ingestion et l'identifiant du run qui l'a produite. La table `ops.executions`
-enregistre chaque étape — durée, volume, statut, cause d'échec. On répond ainsi
-en SQL à : *« cette donnée, d'où vient-elle et quand a-t-elle été traitée ? »*
-Aucune donnée de santé n'entre dans ce journal.
+Chaque ligne de bronze et de silver porte **le jour de dépôt, le fichier dont
+elle provient** et l'identifiant du run qui l'a produite, plus son horodatage —
+d'ingestion en bronze, de construction en silver. La question *« cette donnée,
+d'où vient-elle et quand a-t-elle été traitée ? »* se répond donc en une
+requête, sans jointure entre couches.
+
+La propriété vaut aussi pour ce qui a été **écarté** : `silver.rejets` porte la
+même provenance. On peut donc remonter d'un problème de qualité au fichier de
+dépôt qui l'a introduit — c'est ce que demande une investigation réelle.
+
+Trois nuances assumées. En silver, `patients` est une réduction de plusieurs
+lignes bronze (snapshot cumulatif) : sa provenance est celle de la **version
+retenue**, d'où les colonnes `_jour_depot_retenu` et `_fichier_source_retenu`.
+Pour `monitoring`, `_jour_depot` désigne le jour du fichier, jamais celui de la
+mesure — les deux diffèrent, le flux débordant de son jour de dépôt.
+
+Enfin, les deux **référentiels** (`ref_services`, `ref_cim10`) portent le
+fichier d'origine mais pas de colonne `_jour_depot`, et ne sont pas
+partitionnés. Ce ne sont pas des données journalières : ils sont rechargés en
+entier à chaque exécution, et leur chemin de fichier —
+`lake/referentiels/2026-08-26/services.csv` — contient déjà le jour. Une
+colonne de plus n'aurait rien ajouté qu'un doublon.
+
+**Gold s'arrête volontairement à `_run_id` et `_built_at`.** La provenance
+fichier y serait inexploitable : le compte de pilotage n'a pas même le droit de
+lire `stay_id`, et une investigation passe par la connexion d'exploitation, donc
+par silver et bronze. Ce qu'on veut savoir de gold, c'est quelle exécution l'a
+produit — pas de quel dépôt vient une moyenne.
+
+La table `ops.executions` enregistre chaque étape — durée, volume, statut,
+cause d'échec. Aucune donnée de santé n'entre dans ce journal.
 
 ### 3.3 Limites
 

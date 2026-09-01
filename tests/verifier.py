@@ -215,8 +215,23 @@ def rgpd(r: Rapport) -> None:
         r.controle(f"{table} : aucune cohorte < 5 patients", mini >= 5, f"plus petite = {mini}")
 
     r.titre("5. Traçabilité")
-    requises = {"_jour_depot", "_fichier_source", "_ingested_at", "_run_id"}
-    for table in ("bronze.sejours", "bronze.patients", "bronze.monitoring"):
+    # Bronze porte l'horodatage d'ingestion, silver celui de construction ;
+    # patients est une réduction du snapshot cumulatif, d'où le suffixe.
+    # Les référentiels ne sont pas journaliers : rechargés en entier, non
+    # partitionnés, sans _jour_depot — leur chemin de fichier porte le jour.
+    for table, requises in (
+        ("bronze.sejours",     {"_jour_depot", "_fichier_source", "_ingested_at", "_run_id"}),
+        ("bronze.patients",    {"_jour_depot", "_fichier_source", "_ingested_at", "_run_id"}),
+        ("bronze.monitoring",  {"_jour_depot", "_fichier_source", "_ingested_at", "_run_id"}),
+        ("bronze.diagnostics", {"_jour_depot", "_fichier_source", "_ingested_at", "_run_id"}),
+        ("bronze.ref_services", {"_fichier_source", "_ingested_at", "_run_id"}),
+        ("bronze.ref_cim10",    {"_fichier_source", "_ingested_at", "_run_id"}),
+        ("silver.sejours",     {"_jour_depot", "_fichier_source", "_built_at", "_run_id"}),
+        ("silver.diagnostics", {"_jour_depot", "_fichier_source", "_built_at", "_run_id"}),
+        ("silver.monitoring",  {"_jour_depot", "_fichier_source", "_built_at", "_run_id"}),
+        ("silver.patients",    {"_jour_depot_retenu", "_fichier_source_retenu", "_built_at", "_run_id"}),
+        ("silver.rejets",      {"_jour_depot", "_fichier_source", "_rejected_at", "_run_id"}),
+    ):
         base, nom = table.split(".")
         colonnes = {x[0] for x in ch.query(f"""
             SELECT name FROM system.columns
@@ -224,6 +239,22 @@ def rgpd(r: Rapport) -> None:
         manquantes = sorted(requises - colonnes)
         r.controle(f"{table} porte son origine et son horodatage",
                    not manquantes, f"manque {manquantes}" if manquantes else "")
+
+    # Une colonne déclarée ne suffit pas : elle doit être renseignée.
+    for table, colonne in (("silver.sejours", "_fichier_source"),
+                           ("silver.rejets", "_fichier_source"),
+                           ("silver.patients", "_fichier_source_retenu")):
+        vides = int(ch.command(f"SELECT countIf({colonne} = '') FROM {table}"))
+        r.controle(f"{table}.{colonne} renseigné partout",
+                   vides == 0, f"{vides} ligne(s) sans provenance" if vides else "")
+    # L'idempotence repose entièrement là-dessus : sans partition par jour,
+    # rejouer un jour dupliquerait au lieu de remplacer.
+    for table in ("sejours", "patients", "diagnostics", "monitoring"):
+        cle = ch.command(f"""SELECT partition_key FROM system.tables
+                             WHERE database = 'bronze' AND name = '{table}'""")
+        r.controle(f"bronze.{table} partitionnée par jour de dépôt",
+                   cle == "_jour_depot", f"clé = {cle!r}" if cle != "_jour_depot" else "")
+
     r.controle("le journal d'exécution est alimenté",
                int(ch.command("SELECT count() FROM ops.executions")) > 0)
 

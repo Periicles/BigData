@@ -14,7 +14,6 @@
 -- n'est pas une alerte mais une donnée invalide :
 --     FC 20–250 bpm · SpO2 50–100 % · température 30–45 °C
 -- ═══════════════════════════════════════════════════════════════════════
-
 TRUNCATE TABLE silver.rejets;
 
 -- ── 1. PATIENTS ─────────────────────────────────────────────────────────
@@ -23,33 +22,53 @@ TRUNCATE TABLE silver.rejets;
 -- On retient la version du jour de dépôt le plus récent.
 TRUNCATE TABLE silver.patients;
 
-INSERT INTO silver.patients
+INSERT INTO
+    silver.patients
 SELECT
     patient_pseudo,
-    argMax(birth_year,  _jour_depot),
-    argMax(sex,         _jour_depot),
+    argMax(birth_year, _jour_depot),
+    argMax(sex, _jour_depot),
     argMax(region_code, _jour_depot),
     max(_jour_depot),
-    '{run_id}', now()
-FROM bronze.patients
-GROUP BY patient_pseudo;
-
+    argMax(_fichier_source, _jour_depot),
+    '{run_id}',
+    now()
+FROM
+    bronze.patients
+GROUP BY
+    patient_pseudo;
 
 -- ── 2. SÉJOURS ──────────────────────────────────────────────────────────
 -- Règle du sujet : écarter si discharge_ts < admission_ts.
 -- Règle du sujet : discharge_ts vide = séjour EN COURS, légitime, conservé.
 -- Décision documentée : discharge_mode vide sur séjour clos (1 992 lignes)
 --   est normalisé en 'inconnu' plutôt qu'écarté — la durée reste calculable.
-INSERT INTO silver.rejets
-SELECT 'sejours', stay_id, 'incoherence_temporelle',
-       concat('admission=', toString(admission_ts), ' sortie=', toString(discharge_ts)),
-       '{run_id}', now()
-FROM bronze.sejours
-WHERE discharge_ts IS NOT NULL AND discharge_ts < admission_ts;
+INSERT INTO
+    silver.rejets
+SELECT
+    'sejours',
+    stay_id,
+    'incoherence_temporelle',
+    concat(
+        'admission=',
+        toString(admission_ts),
+        ' sortie=',
+        toString(discharge_ts)
+    ),
+    _jour_depot,
+    _fichier_source,
+    '{run_id}',
+    now()
+FROM
+    bronze.sejours
+WHERE
+    discharge_ts IS NOT NULL
+    AND discharge_ts < admission_ts;
 
 TRUNCATE TABLE silver.sejours;
 
-INSERT INTO silver.sejours
+INSERT INTO
+    silver.sejours
 SELECT
     s.stay_id,
     s.patient_pseudo,
@@ -58,41 +77,85 @@ SELECT
     s.admission_ts,
     s.discharge_ts,
     s.admission_mode,
-    if(s.discharge_mode = '', 'inconnu', s.discharge_mode),
-    if(s.discharge_ts IS NULL, NULL,
-       dateDiff('minute', s.admission_ts, s.discharge_ts) / 1440.0),
+    if(
+        s.discharge_mode = '',
+        'inconnu',
+        s.discharge_mode
+    ),
+    if(
+        s.discharge_ts IS NULL,
+        NULL,
+        dateDiff('minute', s.admission_ts, s.discharge_ts) / 1440.0
+    ),
     s.discharge_ts IS NULL,
     -- Approximé à l'année : conséquence directe de la généralisation RGPD
     -- de la date de naissance. Erreur maximale 1 an, documentée.
-    if(p.patient_pseudo = '', NULL, toYear(s.admission_ts) - p.birth_year),
-    '{run_id}', now()
-FROM bronze.sejours AS s
-LEFT JOIN bronze.ref_services AS r ON s.service_code = r.service_code
-LEFT JOIN silver.patients     AS p ON s.patient_pseudo = p.patient_pseudo
-WHERE s.discharge_ts IS NULL OR s.discharge_ts >= s.admission_ts;
-
+    if(
+        p.patient_pseudo = '',
+        NULL,
+        toYear(s.admission_ts) - p.birth_year
+    ),
+    s._jour_depot,
+    s._fichier_source,
+    '{run_id}',
+    now()
+FROM
+    bronze.sejours AS s
+    LEFT JOIN bronze.ref_services AS r ON s.service_code = r.service_code
+    LEFT JOIN silver.patients AS p ON s.patient_pseudo = p.patient_pseudo
+WHERE
+    s.discharge_ts IS NULL
+    OR s.discharge_ts >= s.admission_ts;
 
 -- ── 3. DIAGNOSTICS ──────────────────────────────────────────────────────
 -- Aucune anomalie propre : intégrité référentielle intégralement vérifiée
 -- (0 code hors nomenclature, 0 séjour orphelin, 1 principal par séjour).
 -- Seuls les diagnostics rattachés à un séjour écarté sont retirés, pour ne
 -- pas laisser d'orphelins en silver.
-INSERT INTO silver.rejets
-SELECT 'diagnostics', concat(stay_id, '/', code_cim10), 'sejour_ecarte',
-       'diagnostic rattaché à un séjour exclu pour incohérence temporelle',
-       '{run_id}', now()
-FROM bronze.diagnostics
-WHERE stay_id NOT IN (SELECT stay_id FROM silver.sejours);
+INSERT INTO
+    silver.rejets
+SELECT
+    'diagnostics',
+    concat(stay_id, '/', code_cim10),
+    'sejour_ecarte',
+    'diagnostic rattaché à un séjour exclu pour incohérence temporelle',
+    _jour_depot,
+    _fichier_source,
+    '{run_id}',
+    now()
+FROM
+    bronze.diagnostics
+WHERE
+    stay_id NOT IN (
+        SELECT
+            stay_id
+        FROM
+            silver.sejours
+    );
 
 TRUNCATE TABLE silver.diagnostics;
 
-INSERT INTO silver.diagnostics
-SELECT d.stay_id, d.code_cim10, d.type_diag,
-       coalesce(c.libelle, 'inconnu'), '{run_id}', now()
-FROM bronze.diagnostics AS d
-LEFT JOIN bronze.ref_cim10 AS c ON d.code_cim10 = c.code_cim10
-WHERE d.stay_id IN (SELECT stay_id FROM silver.sejours);
-
+INSERT INTO
+    silver.diagnostics
+SELECT
+    d.stay_id,
+    d.code_cim10,
+    d.type_diag,
+    coalesce(c.libelle, 'inconnu'),
+    d._jour_depot,
+    d._fichier_source,
+    '{run_id}',
+    now()
+FROM
+    bronze.diagnostics AS d
+    LEFT JOIN bronze.ref_cim10 AS c ON d.code_cim10 = c.code_cim10
+WHERE
+    d.stay_id IN (
+        SELECT
+            stay_id
+        FROM
+            silver.sejours
+    );
 
 -- ── 4. MONITORING ───────────────────────────────────────────────────────
 -- Règle du sujet : écarter hors plage physiologique.
@@ -103,41 +166,101 @@ WHERE d.stay_id IN (SELECT stay_id FROM silver.sejours);
 -- entier est écarté : un capteur en panne ne garantit la fiabilité d'aucune
 -- de ses mesures, et ne conserver que la température créerait des relevés
 -- partiels au grain incohérent.
-INSERT INTO silver.rejets
-SELECT 'monitoring', concat(stay_id, '@', toString(ts)), 'capteur_hors_plage',
-       concat('fc=', toString(heart_rate), ' spo2=', toString(spo2),
-              ' temp=', toString(temp_c)),
-       '{run_id}', now()
-FROM bronze.monitoring
-WHERE heart_rate NOT BETWEEN 20 AND 250
-   OR spo2       NOT BETWEEN 50 AND 100
-   OR temp_c     NOT BETWEEN 30 AND 45;
+INSERT INTO
+    silver.rejets
+SELECT
+    'monitoring',
+    concat(stay_id, '@', toString(ts)),
+    'capteur_hors_plage',
+    concat(
+        'fc=',
+        toString(heart_rate),
+        ' spo2=',
+        toString(spo2),
+        ' temp=',
+        toString(temp_c)
+    ),
+    _jour_depot,
+    _fichier_source,
+    '{run_id}',
+    now()
+FROM
+    bronze.monitoring
+WHERE
+    heart_rate NOT BETWEEN 20
+    AND 250
+    OR spo2 NOT BETWEEN 50
+    AND 100
+    OR temp_c NOT BETWEEN 30
+    AND 45;
 
 -- Les relevés rattachés à un séjour écarté partent avec lui. C'est bien la
 -- MÊME cause que l'incohérence temporelle : sur un séjour dont la sortie
 -- précède l'admission, tout relevé est « après la sortie » par construction.
-INSERT INTO silver.rejets
-SELECT 'monitoring', concat(stay_id, '@', toString(ts)), 'sejour_ecarte',
-       'relevé rattaché à un séjour exclu pour incohérence temporelle',
-       '{run_id}', now()
-FROM bronze.monitoring
-WHERE stay_id NOT IN (SELECT stay_id FROM silver.sejours)
-  AND heart_rate BETWEEN 20 AND 250
-  AND spo2       BETWEEN 50 AND 100
-  AND temp_c     BETWEEN 30 AND 45;
+INSERT INTO
+    silver.rejets
+SELECT
+    'monitoring',
+    concat(stay_id, '@', toString(ts)),
+    'sejour_ecarte',
+    'relevé rattaché à un séjour exclu pour incohérence temporelle',
+    _jour_depot,
+    _fichier_source,
+    '{run_id}',
+    now()
+FROM
+    bronze.monitoring
+WHERE
+    stay_id NOT IN (
+        SELECT
+            stay_id
+        FROM
+            silver.sejours
+    )
+    AND heart_rate BETWEEN 20
+    AND 250
+    AND spo2 BETWEEN 50
+    AND 100
+    AND temp_c BETWEEN 30
+    AND 45;
 
 TRUNCATE TABLE silver.monitoring;
 
-INSERT INTO silver.monitoring
+INSERT INTO
+    silver.monitoring
 SELECT
-    m.stay_id, m.ts, m.heart_rate, m.spo2, m.temp_c,
-    (m.heart_rate < 40 OR m.heart_rate > 120) AS alerte_fc,
-    (m.spo2 < 92)                             AS alerte_spo2,
-    (m.temp_c > 38.5)                         AS alerte_temp,
-    (alerte_fc OR alerte_spo2 OR alerte_temp) AS en_alerte,
-    '{run_id}', now()
-FROM bronze.monitoring AS m
-WHERE m.heart_rate BETWEEN 20 AND 250
-  AND m.spo2       BETWEEN 50 AND 100
-  AND m.temp_c     BETWEEN 30 AND 45
-  AND m.stay_id IN (SELECT stay_id FROM silver.sejours);
+    m.stay_id,
+    m.ts,
+    m.heart_rate,
+    m.spo2,
+    m.temp_c,
+    (
+        m.heart_rate < 40
+        OR m.heart_rate > 120
+    ) AS alerte_fc,
+    (m.spo2 < 92) AS alerte_spo2,
+    (m.temp_c > 38.5) AS alerte_temp,
+    (
+        alerte_fc
+        OR alerte_spo2
+        OR alerte_temp
+    ) AS en_alerte,
+    m._jour_depot,
+    m._fichier_source,
+    '{run_id}',
+    now()
+FROM
+    bronze.monitoring AS m
+WHERE
+    m.heart_rate BETWEEN 20
+    AND 250
+    AND m.spo2 BETWEEN 50
+    AND 100
+    AND m.temp_c BETWEEN 30
+    AND 45
+    AND m.stay_id IN (
+        SELECT
+            stay_id
+        FROM
+            silver.sejours
+    );
