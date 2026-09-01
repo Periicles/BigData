@@ -221,9 +221,8 @@ class Pipeline:
     def ingerer(self, jour: str) -> None:
         valider_jour(jour)
         with self.etape("lake", jour) as c:
-            resultats = copier_jour(jour)
-            c["lignes"] = sum(r.lignes or 0 for r in resultats)
-            if not resultats:
+            fichiers, c["lignes"] = copier_jour(jour)
+            if not fichiers:
                 raise ErreurPipeline(f"aucun fichier trouvé pour le {jour}")
 
         with self.etape("bronze", jour) as c:

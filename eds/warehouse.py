@@ -69,49 +69,26 @@ def executer_fichier(ch: Client, nom: str, **substitutions: str) -> int:
     return len(instructions)
 
 
+# Commentaire ligne, commentaire bloc, chaîne littérale, ou séparateur. Ces
+# quatre motifs sont reconnus dans cet ordre : un ';' à l'intérieur d'un
+# commentaire ou d'une chaîne est donc consommé par le motif englobant et ne
+# peut plus être vu comme un séparateur.
+_JETONS_SQL = re.compile(r"--[^\n]*|/\*.*?\*/|'(?:[^'\\]|\\.)*'|;", re.S)
+
+
 def decouper_instructions(sql: str) -> list[str]:
     """Découpe un script SQL en instructions.
 
     Un simple split sur ';' est faux : le caractère apparaît aussi dans les
-    commentaires et les chaînes littérales. On parcourt donc le texte en
-    suivant l'état courant (commentaire ligne, commentaire bloc, chaîne).
+    commentaires et les chaînes littérales. On ne coupe donc que sur les ';'
+    qui subsistent une fois ceux-là reconnus comme des blocs insécables.
     """
-    instructions, courante = [], []
-    i, n = 0, len(sql)
-    while i < n:
-        c = sql[i]
-        suivant = sql[i + 1] if i + 1 < n else ""
-
-        if c == "-" and suivant == "-":  # commentaire ligne
-            fin = sql.find("\n", i)
-            fin = n if fin == -1 else fin
-            courante.append(sql[i:fin])
-            i = fin
-        elif c == "/" and suivant == "*":  # commentaire bloc
-            fin = sql.find("*/", i + 2)
-            fin = n if fin == -1 else fin + 2
-            courante.append(sql[i:fin])
-            i = fin
-        elif c == "'":  # chaîne littérale
-            j = i + 1
-            while j < n:
-                if sql[j] == "\\":
-                    j += 2
-                    continue
-                if sql[j] == "'":
-                    break
-                j += 1
-            courante.append(sql[i : j + 1])
-            i = j + 1
-        elif c == ";":  # fin d'instruction
-            instructions.append("".join(courante))
-            courante = []
-            i += 1
-        else:
-            courante.append(c)
-            i += 1
-
-    instructions.append("".join(courante))
+    instructions, debut = [], 0
+    for jeton in _JETONS_SQL.finditer(sql):
+        if jeton.group() == ";":
+            instructions.append(sql[debut : jeton.start()])
+            debut = jeton.end()
+    instructions.append(sql[debut:])
     return [
         s.strip() for s in instructions if s.strip() and not _seulement_commentaires(s)
     ]

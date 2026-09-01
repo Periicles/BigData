@@ -192,20 +192,24 @@ Quatre contrôles, exécutables à tout moment. Ils constituent la démonstratio
 des propriétés annoncées.
 
 ```bash
-.venv/bin/python -m tests.verifier_pseudonymisation   # aucune identité dans le lake
-.venv/bin/python -m tests.verifier_qualite            # bronze = silver + rejets
-.venv/bin/python -m tests.verifier_rgpd               # les 5 contraintes du sujet
-.venv/bin/python -m tests.demontrer_cloisonnement     # droits d'accès disjoints
-.venv/bin/python -m tests.demontrer_reprise           # erreurs et reprise sur incident
+.venv/bin/python -m tests.verifier      # les trois contrôles d'un coup
+.venv/bin/python -m tests.demontrer     # les deux démonstrations
+
+# ou une section à la fois
+.venv/bin/python -m tests.verifier pseudonymisation   # aucune identité dans le lake
+.venv/bin/python -m tests.verifier qualite            # bronze = silver + rejets
+.venv/bin/python -m tests.verifier rgpd               # les 5 contraintes du sujet
+.venv/bin/python -m tests.demontrer cloisonnement     # droits d'accès disjoints
+.venv/bin/python -m tests.demontrer reprise           # erreurs et reprise sur incident
 ```
 
 | Contrôle | Ce qu'il prouve |
 |---|---|
-| `verifier_pseudonymisation` | Les 17 503 valeurs identifiantes de la source sont introuvables dans le lake ; aucune collision de pseudonyme ; les jointures survivent |
-| `verifier_qualite` | Équation de conservation par source, déduplication, règles métier, intégrité référentielle — 15 contrôles |
-| `verifier_rgpd` | Les cinq contraintes RGPD, vérifiées sur l'entrepôt réel : pseudonymisation, minimisation, cloisonnement, petits effectifs, traçabilité — plus l'absence de donnée personnelle dans les journaux |
-| `demontrer_cloisonnement` | Chaque compte accède à sa base et se voit refuser les trois autres, par le moteur |
-| `demontrer_reprise` | Erreurs détectées, tracées, entrepôt cohérent, reprise par simple relance |
+| `verifier pseudonymisation` | Les 17 503 valeurs identifiantes de la source sont introuvables dans le lake ; aucune collision de pseudonyme ; les jointures survivent |
+| `verifier qualite` | Équation de conservation par source, déduplication, règles métier, intégrité référentielle — 15 contrôles |
+| `verifier rgpd` | Les cinq contraintes RGPD, vérifiées sur l'entrepôt réel : pseudonymisation, minimisation, cloisonnement, petits effectifs, traçabilité — plus l'absence de donnée personnelle dans les journaux |
+| `demontrer cloisonnement` | Chaque compte accède à sa base et se voit refuser les trois autres, par le moteur |
+| `demontrer reprise` | Erreurs détectées, tracées, entrepôt cohérent, reprise par simple relance |
 
 ---
 
@@ -256,12 +260,12 @@ docker compose down -v && docker compose up -d
 ## Conformité RGPD
 
 Les cinq contraintes du sujet sont vérifiables en une commande
-(`python -m tests.verifier_rgpd`) :
+(`python -m tests.verifier rgpd`) :
 
 | Contrainte | Mise en œuvre | Où |
 |---|---|---|
-| **Pseudonymisation** | HMAC-SHA256 salé appliqué **pendant la copie** : les identités ne sont écrites nulle part. Aucune colonne `nir`, `nom`, `prenom`, `birth_date` ni `patient_id` n'existe dans l'entrepôt. | `eds/pseudo.py` |
-| **Minimisation** | Trois colonnes supprimées à la source, date de naissance généralisée à l'année. La base recherche n'expose ni `birth_year`, ni `patient_pseudo`, ni `region`. | `eds/pseudo.py`, `sql/31_gold_transform.sql` |
+| **Pseudonymisation** | HMAC-SHA256 salé appliqué **pendant la copie** : les identités ne sont écrites nulle part. Aucune colonne `nir`, `nom`, `prenom`, `birth_date` ni `patient_id` n'existe dans l'entrepôt. | `eds/lake.py` |
+| **Minimisation** | Trois colonnes supprimées à la source, date de naissance généralisée à l'année. La base recherche n'expose ni `birth_year`, ni `patient_pseudo`, ni `region`. | `eds/lake.py`, `sql/31_gold_transform.sql` |
 | **Cloisonnement** | Deux bases séparées, quatre comptes de service bornés, droits posés **colonne par colonne** sur la restitution. Le refus vient du moteur. | `sql/50_droits.sql` |
 | **Petits effectifs** | `HAVING count(DISTINCT patient) >= 5` appliqué **à l'écriture** : aucune cohorte sous seuil n'existe dans la base. | `sql/31_gold_transform.sql` |
 | **Traçabilité** | Chaque ligne porte son fichier d'origine, son horodatage d'ingestion et l'identifiant du run. Le journal `ops.executions` conserve chaque étape, succès comme échec. | `sql/10_bronze.sql`, `sql/60_ops.sql` |
@@ -282,8 +286,7 @@ requirements.txt         2 dépendances Python
 
 eds/                     le pipeline
   config.py              chemins et secrets, sans dépendance externe
-  pseudo.py              pseudonymisation : HMAC-SHA256 salé, généralisation
-  lake.py                copie transformante en flux
+  lake.py                copie transformante en flux + pseudonymisation
   warehouse.py           client ClickHouse, exécution SQL, chargement bronze
   journal.py             journalisation JSON + console
   run.py                 orchestrateur — point d'entrée

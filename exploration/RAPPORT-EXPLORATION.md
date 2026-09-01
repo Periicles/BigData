@@ -2,7 +2,7 @@
 
 Exploration réalisée avant toute décision d'architecture, conformément à la consigne
 de la fiche sujet. Tous les chiffres ci-dessous sont reproductibles via les scripts
-`exploration/0*.py` (DuckDB, lecture directe du filestorage en `VARCHAR` pour
+`exploration/profilage.py` (DuckDB, lecture directe du filestorage en `VARCHAR` pour
 constater les formats réels plutôt que les laisser corriger par l'auto-typage).
 
 Périmètre : 3 jours de dépôt — 2026-08-26, 27 et 28.
@@ -211,10 +211,13 @@ et non conservé tel quel.
 
 ```
 python3 -m venv .venv && .venv/bin/pip install duckdb
-.venv/bin/python exploration/00_inventaire.py        # volumétrie, schémas, référentiels
-.venv/bin/python exploration/01_patients.py          # qualité patients
-.venv/bin/python exploration/02_sejours.py           # qualité séjours, nature des dépôts
-.venv/bin/python exploration/03_diag_monitoring.py   # diagnostics, monitoring, intégrité croisée
-.venv/bin/python exploration/04_affinage.py          # nature des aberrations, couverture
-.venv/bin/python exploration/05_reidentification.py  # k-anonymat
+.venv/bin/python -m exploration.profilage                  # les six sections
+
+# ou une section à la fois
+.venv/bin/python -m exploration.profilage inventaire       # volumétrie, schémas, référentiels
+.venv/bin/python -m exploration.profilage patients         # qualité patients
+.venv/bin/python -m exploration.profilage sejours          # qualité séjours, nature des dépôts
+.venv/bin/python -m exploration.profilage diagnostics      # structure, intégrité référentielle
+.venv/bin/python -m exploration.profilage monitoring       # aberrations, couverture, alertes
+.venv/bin/python -m exploration.profilage reidentification # k-anonymat
 ```

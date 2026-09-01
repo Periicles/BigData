@@ -87,8 +87,14 @@ def ouvrir_session() -> str:
     ]
 
 
-def declarer_base(session: str, nom: str, base_ch: str, utilisateur: str,
-                  mot_de_passe: str, toutes_bases: bool = False) -> int:
+def declarer_base(
+    session: str,
+    nom: str,
+    base_ch: str,
+    utilisateur: str,
+    mot_de_passe: str,
+    toutes_bases: bool = False,
+) -> int:
     """Déclare une base ClickHouse dans Metabase, ou retourne l'existante."""
     for base in _appel("/database", session=session)["data"]:
         if base["name"] == nom:
@@ -191,6 +197,34 @@ def _dashboard_existant(session: str, nom: str) -> int | None:
     return None
 
 
+def _carte_texte(texte: str) -> dict:
+    """Encart de texte pleine largeur, placé en tête de tableau.
+
+    Metabase appelle « virtual card » une carte sans question derrière : la
+    structure est imposée par son API, d'où ces champs vides obligatoires.
+    """
+    return {
+        "id": -1,
+        "card_id": None,
+        "row": 0,
+        "col": 0,
+        "size_x": GRILLE,
+        "size_y": 4,
+        "parameter_mappings": [],
+        "visualization_settings": {
+            "virtual_card": {
+                "name": None,
+                "display": "text",
+                "visualization_settings": {},
+                "dataset_query": {},
+                "archived": False,
+            },
+            "text": texte,
+            "dashcard.background": False,
+        },
+    }
+
+
 def creer_tableau(
     session: str, base_id: int, definition: dict, collection_id: int
 ) -> int:
@@ -220,29 +254,7 @@ def creer_tableau(
             session=session,
         )
 
-    # L'encart de limites occupe toute la largeur, en tête.
-    cartes = [
-        {
-            "id": -1,
-            "card_id": None,
-            "row": 0,
-            "col": 0,
-            "size_x": GRILLE,
-            "size_y": 4,
-            "parameter_mappings": [],
-            "visualization_settings": {
-                "virtual_card": {
-                    "name": None,
-                    "display": "text",
-                    "visualization_settings": {},
-                    "dataset_query": {},
-                    "archived": False,
-                },
-                "text": definition["encart"],
-                "dashcard.background": False,
-            },
-        }
-    ]
+    cartes = [_carte_texte(definition["encart"])]
 
     for index, question in enumerate(definition["questions"], start=2):
         carte_id = creer_question(session, base_id, question, collection_id)

@@ -1,132 +1,160 @@
 """Copie du dépôt CHU vers le lake, avec pseudonymisation au fil de l'eau.
 
 Le dépôt `source-filestorage` est en lecture seule : le pipeline n'y écrit
-jamais. Chaque fichier est lu, transformé si nécessaire, puis écrit dans
-`lake/`.
-
-Deux sources seulement portent de l'identité et sont donc transformées :
-`patients` et `sejours` (qui référence le patient). Les trois autres sont
-recopiées à l'octet près.
+jamais. Seules `patients` et `sejours` portent de l'identité et sont donc
+transformées ; les trois autres sources sont recopiées à l'octet près.
 
 La transformation est faite **en flux**, ligne par ligne : les identités ne
 sont jamais écrites sur disque, pas même dans un répertoire temporaire, et
 l'empreinte mémoire ne dépend pas de la taille des fichiers.
+
+Trois règles, appliquées AVANT toute écriture :
+
+  1. `patient_id` (IPP)     -> pseudonyme HMAC-SHA256 salé, déterministe
+  2. `birth_date`           -> `birth_year` (généralisation)
+  3. `nir`, `nom`, `prenom` -> supprimés
+
+Le hachage est déterministe pour que les jointures patients <-> séjours
+survivent, et salé parce que l'espace des IPP est énumérable : un SHA-256 nu
+serait cassable par dictionnaire en quelques secondes.
 """
 
 from __future__ import annotations
 
 import csv
+import hashlib
+import hmac
 import logging
 import shutil
-from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 
-from eds.config import LAKE, SOURCE, SOURCES_CONNUES
-from eds.pseudo import anonymiser_ligne_patient, anonymiser_ligne_sejour
+from eds.config import LAKE, SOURCE, SOURCES_CONNUES, exiger
 
 journal = logging.getLogger(__name__)
 
-# Sources transformées, et la fonction qui traite une de leurs lignes.
-TRANSFORMATIONS = {
-    "patients": anonymiser_ligne_patient,
-    "sejours": anonymiser_ligne_sejour,
-}
+# 16 caractères hexadécimaux = 64 bits. Pour 6 000 patients, la probabilité de
+# collision est de l'ordre de 10^-12 : négligeable, et vérifiée au chargement.
+LONGUEUR_PSEUDO = 16
 
 
-@dataclass(frozen=True)
-class ResultatCopie:
-    source: str
-    jour: str
-    fichier: str
-    lignes: int | None  # None pour une copie binaire (non parsée)
-    pseudonymise: bool
+# ── Pseudonymisation ─────────────────────────────────────────────────────
+@lru_cache(maxsize=1)
+def _sel() -> bytes:
+    return exiger("EDS_PSEUDO_SALT").encode("utf-8")
 
 
+@lru_cache(maxsize=100_000)
+def pseudonymiser(patient_id: str) -> str:
+    """Pseudonyme stable et non réversible d'un identifiant patient."""
+    empreinte = hmac.new(_sel(), patient_id.encode("utf-8"), hashlib.sha256)
+    return empreinte.hexdigest()[:LONGUEUR_PSEUDO]
+
+
+def annee_naissance(birth_date: str) -> str:
+    """Généralise une date de naissance à l'année.
+
+    Les dates sont au format ISO dans la source ; toute autre forme est une
+    anomalie que l'on laisse remonter plutôt que de la deviner.
+    """
+    valeur = (birth_date or "").strip()
+    if len(valeur) >= 4 and valeur[:4].isdigit():
+        return valeur[:4]
+    raise ValueError(f"Date de naissance non exploitable : {birth_date!r}")
+
+
+def _ligne_patient(ligne: dict[str, str]) -> dict[str, str]:
+    """Construit un dictionnaire NEUF à quatre clés.
+
+    C'est une liste blanche, pas un filtrage : `nir`, `nom`, `prenom`,
+    `patient_id` et `birth_date` ne peuvent pas survivre à cette fonction,
+    et une colonne identifiante ajoutée demain à la source non plus.
+    """
+    return {
+        "patient_pseudo": pseudonymiser(ligne["patient_id"]),
+        "birth_year": annee_naissance(ligne["birth_date"]),
+        "sex": ligne["sex"],
+        "region_code": ligne["region_code"],
+    }
+
+
+def _ligne_sejour(ligne: dict[str, str]) -> dict[str, str]:
+    """Remplace la référence patient. Le même sel produit le même pseudonyme
+    que pour `patients` : la jointure reste possible dans l'entrepôt."""
+    sortie = dict(ligne)
+    sortie["patient_pseudo"] = pseudonymiser(sortie.pop("patient_id"))
+    return sortie
+
+
+TRANSFORMATIONS = {"patients": _ligne_patient, "sejours": _ligne_sejour}
+
+
+# ── Copie ────────────────────────────────────────────────────────────────
 def lister_jours(source: str) -> list[str]:
-    """Jours de dépôt disponibles pour une source, dans l'ordre chronologique."""
+    """Jours de dépôt d'une source, dans l'ordre chronologique."""
     racine = SOURCE / source
-    if not racine.is_dir():
-        return []
-    return sorted(d.name for d in racine.iterdir() if d.is_dir())
+    return (
+        sorted(d.name for d in racine.iterdir() if d.is_dir())
+        if racine.is_dir()
+        else []
+    )
 
 
 def jours_disponibles() -> list[str]:
     """Union des jours de dépôt, toutes sources confondues.
 
-    Les référentiels ne sont déposés que le premier jour : on prend l'union
-    plutôt que l'intersection, sinon un jour sans référentiel disparaîtrait.
+    Union et non intersection : les référentiels n'étant déposés que le
+    premier jour, l'intersection ferait disparaître tous les autres.
     """
-    jours: set[str] = set()
-    for source in SOURCES_CONNUES:
-        jours.update(lister_jours(source))
-    return sorted(jours)
+    return sorted({j for s in SOURCES_CONNUES for j in lister_jours(s)})
 
 
-def _copier_csv_transforme(entree: Path, sortie: Path, transformer) -> int:
-    """Copie un CSV en appliquant `transformer` à chaque ligne."""
+def _copier_csv(entree: Path, sortie: Path, transformer) -> int:
+    """Réécrit un CSV en transformant chaque ligne.
+
+    L'en-tête de sortie est déduit de la première ligne transformée : les
+    colonnes supprimées n'y figurent donc pas.
+    """
     with entree.open(newline="", encoding="utf-8") as f_in:
-        lecteur = csv.DictReader(f_in)
-        premiere = next(lecteur, None)
+        lignes = (transformer(l) for l in csv.DictReader(f_in))
+        premiere = next(lignes, None)
         if premiere is None:
             sortie.write_text("", encoding="utf-8")
             return 0
-
-        premiere_transformee = transformer(premiere)
         with sortie.open("w", newline="", encoding="utf-8") as f_out:
-            redacteur = csv.DictWriter(f_out, fieldnames=list(premiere_transformee))
+            redacteur = csv.DictWriter(f_out, fieldnames=list(premiere))
             redacteur.writeheader()
-            redacteur.writerow(premiere_transformee)
-            lignes = 1
-            for ligne in lecteur:
-                redacteur.writerow(transformer(ligne))
-                lignes += 1
-    return lignes
+            redacteur.writerow(premiere)
+            total = 1
+            for ligne in lignes:
+                redacteur.writerow(ligne)
+                total += 1
+    return total
 
 
-def copier_source_jour(source: str, jour: str) -> list[ResultatCopie]:
-    """Copie tous les fichiers d'une source pour un jour donné.
+def copier_jour(jour: str) -> tuple[int, int]:
+    """Copie toutes les sources d'un jour de dépôt vers le lake.
 
-    Idempotent : réécrit intégralement les fichiers cibles.
+    Retourne (fichiers copiés, lignes pseudonymisées).
+    Idempotent : les fichiers cibles sont réécrits intégralement.
     """
-    origine = SOURCE / source / jour
-    if not origine.is_dir():
-        return []
-
-    destination = LAKE / source / jour
-    destination.mkdir(parents=True, exist_ok=True)
-    transformer = TRANSFORMATIONS.get(source)
-    resultats = []
-
-    for fichier in sorted(origine.iterdir()):
-        if not fichier.is_file():
-            continue
-        cible = destination / fichier.name
-
-        if transformer is not None and fichier.suffix == ".csv":
-            lignes = _copier_csv_transforme(fichier, cible, transformer)
-            resultats.append(ResultatCopie(source, jour, fichier.name, lignes, True))
-        else:
-            # Aucune donnée identifiante : copie fidèle, sans parsing.
-            shutil.copy2(fichier, cible)
-            resultats.append(ResultatCopie(source, jour, fichier.name, None, False))
-
-    for r in resultats:
-        journal.info(
-            "copie lake",
-            extra={
-                "source": r.source,
-                "jour": r.jour,
-                "fichier": r.fichier,
-                "lignes": r.lignes,
-                "pseudonymise": r.pseudonymise,
-            },
-        )
-    return resultats
-
-
-def copier_jour(jour: str) -> list[ResultatCopie]:
-    """Copie toutes les sources pour un jour de dépôt."""
-    resultats = []
+    fichiers = lignes = 0
     for source in SOURCES_CONNUES:
-        resultats.extend(copier_source_jour(source, jour))
-    return resultats
+        origine = SOURCE / source / jour
+        if not origine.is_dir():
+            continue
+        destination = LAKE / source / jour
+        destination.mkdir(parents=True, exist_ok=True)
+        transformer = TRANSFORMATIONS.get(source)
+        for fichier in sorted(f for f in origine.iterdir() if f.is_file()):
+            cible = destination / fichier.name
+            if transformer is not None and fichier.suffix == ".csv":
+                lignes += _copier_csv(fichier, cible, transformer)
+            else:
+                shutil.copy2(fichier, cible)  # aucune donnée identifiante
+            fichiers += 1
+    journal.info(
+        "copie lake",
+        extra={"jour": jour, "fichiers": fichiers, "lignes": lignes},
+    )
+    return fichiers, lignes
