@@ -29,17 +29,21 @@ SOURCES_CONNUES = ("patients", "sejours", "diagnostics", "monitoring", "referent
 # donnée, et le sujet n'en fournit aucune valeur.
 #
 # Il n'existe d'ailleurs aucun seuil réglementaire. Les moniteurs de chevet
-# sortent d'usine avec des valeurs par défaut (chez l'adulte, alarme basse de
-# fréquence cardiaque autour de 50 bpm en avertissement, 40 en critique) que
-# chaque service — réanimation, USIC, télémétrie, médecine — puis chaque
-# soignant sont censés adapter au patient : bêta-bloquants, sportif, nouveau-
-# né. Les valeurs ci-dessous sont donc un PARAMÈTRE D'EXPLOITATION, à valider
-# par le corps médical, et surchargeable sans toucher au SQL.
+# sortent d'usine avec des valeurs par défaut que chaque service —
+# réanimation, USIC, télémétrie, médecine — puis chaque soignant sont censés
+# adapter au patient : bêta-bloquants, sportif, nouveau-né. Les valeurs
+# ci-dessous sont donc un PARAMÈTRE D'EXPLOITATION, à valider par le corps
+# médical, et surchargeable sans toucher au SQL.
+#
+# Les valeurs par défaut sont celles fixées par l'intervenant (feuille de
+# réponses fournie) : FC < 50 ou > 100 bpm, SpO2 < 92 %, T° > 38,5 °C — un
+# point de départ retenu pour reproduire l'indicateur ④ du § 4, pas une norme
+# clinique figée. Un service reste libre de les ajuster via EDS_SEUIL_*.
 #
 # Elles sont substituées dans 31_gold_transform.sql, comme {run_id}.
 SEUILS_ALERTE_DEFAUT = {
-    "fc_basse": "40",  # bpm — alarme basse critique adulte
-    "fc_haute": "120",  # bpm
+    "fc_basse": "50",  # bpm
+    "fc_haute": "100",  # bpm
     "spo2_basse": "92",  # %
     "temp_haute": "38.5",  # °C
 }

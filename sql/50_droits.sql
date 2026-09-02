@@ -13,10 +13,20 @@
 -- applicative que l'on pourrait contourner en écrivant une autre requête.
 -- ─────────────────────────────────────────────────────────────────────────
 
-CREATE USER IF NOT EXISTS eds_pilotage
+-- Chaque compte est DROP puis recréé, plutôt que `CREATE USER IF NOT EXISTS` :
+-- ce script n'exécute que des GRANT, jamais de REVOKE, et ClickHouse ne
+-- réinitialise pas les droits d'un utilisateur déjà existant. Un GRANT retiré
+-- d'ici (ou une colonne renommée en amont) laisserait donc un droit fantôme
+-- accroché au compte, invisible tant qu'on ne compare pas `system.grants` au
+-- schéma courant. Repartir d'un compte neuf à chaque exécution garantit que
+-- les droits vivants sont exactement ceux que ce fichier décrit — ni plus,
+-- ni un résidu d'une itération passée.
+DROP USER IF EXISTS eds_pilotage;
+CREATE USER eds_pilotage
     IDENTIFIED WITH sha256_password BY '{mdp_pilotage}';
 
-CREATE USER IF NOT EXISTS eds_recherche
+DROP USER IF EXISTS eds_recherche;
+CREATE USER eds_recherche
     IDENTIFIED WITH sha256_password BY '{mdp_recherche}';
 
 -- ── Compte de pilotage : droits AU NIVEAU COLONNE ───────────────────────
@@ -35,7 +45,7 @@ CREATE USER IF NOT EXISTS eds_recherche
 GRANT SELECT(
     service_code, date_admission, tranche_age,
     duree_jours, est_en_cours, est_urgence,
-    est_sejour_index, suivi_readmission_30j
+    est_sejour_index, suivi_readmission_30j, readmission_30j_brute
 ) ON gold_pilotage.fact_sejour TO eds_pilotage;
 
 GRANT SELECT(
@@ -45,9 +55,11 @@ GRANT SELECT(
 
 -- ── Les indicateurs agrégés : accordés en entier ────────────────────────
 --
--- Ces quatre tables ne portent NI pseudonyme, NI stay_id, NI horodatage
--- précis — rien qui désigne un patient ou un séjour. Le découpage colonne
--- par colonne n'a donc pas d'objet ici : il n'y a aucune colonne à retenir.
+-- Ces huit tables ne portent NI pseudonyme, NI stay_id, NI horodatage
+-- précis — rien qui désigne un patient ou un séjour. `kpi_origine_service`
+-- non plus : elle croise service et département de résidence, jamais le
+-- patient lui-même. Le découpage colonne par colonne n'a donc pas d'objet
+-- ici : il n'y a aucune colonne à retenir.
 --
 -- C'est le chemin de lecture normal du pilotage. L'accès au grain de
 -- l'événement ci-dessus subsiste pour les analyses qu'aucune table figée ne
@@ -59,6 +71,7 @@ GRANT SELECT ON gold_pilotage.kpi_alertes_jour         TO eds_pilotage;
 GRANT SELECT ON gold_pilotage.kpi_occupation_jour      TO eds_pilotage;
 GRANT SELECT ON gold_pilotage.kpi_mortalite_service    TO eds_pilotage;
 GRANT SELECT ON gold_pilotage.kpi_casemix_service      TO eds_pilotage;
+GRANT SELECT ON gold_pilotage.kpi_origine_service      TO eds_pilotage;
 
 GRANT SELECT(service_code, service) ON gold_pilotage.dim_service TO eds_pilotage;
 
@@ -66,7 +79,7 @@ GRANT SELECT(service_code, service) ON gold_pilotage.dim_service TO eds_pilotage
 -- Les deux tables de cohortes sont déjà agrégées, filtrées à k >= 5, et ne
 -- contiennent aucun pseudonyme. Les droits restent néanmoins limités aux
 -- colonnes exposées, par cohérence.
-GRANT SELECT(code_cim10, pathologie, nb_patients, nb_sejours)
+GRANT SELECT(code_cim10, pathologie, nb_patients, nb_patients_principal, nb_sejours)
     ON gold_recherche.coh_prevalence TO eds_recherche;
 
 GRANT SELECT(code_cim10, pathologie, tranche_age, sexe, nb_patients)
@@ -83,7 +96,8 @@ GRANT SELECT(code_cim10, pathologie, tranche_age, sexe, nb_patients)
 -- Un compte distinct, en LECTURE SEULE sur les couches techniques, applique
 -- le principe de moindre privilège : aucune écriture n'est possible avec ce
 -- compte, quelle que soit la requête saisie.
-CREATE USER IF NOT EXISTS eds_exploitation
+DROP USER IF EXISTS eds_exploitation;
+CREATE USER eds_exploitation
     IDENTIFIED WITH sha256_password BY '{mdp_exploitation}';
 
 GRANT SELECT ON bronze.*      TO eds_exploitation;

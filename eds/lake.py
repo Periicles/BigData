@@ -17,6 +17,18 @@ Trois règles, appliquées AVANT toute écriture :
 Le hachage est déterministe pour que les jointures patients <-> séjours
 survivent, et salé parce que l'espace des IPP est énumérable : un SHA-256 nu
 serait cassable par dictionnaire en quelques secondes.
+
+DEUX ENTRÉES SOURCE MALFORMÉES NE BLOQUENT PAS LE DÉPÔT DU JOUR, ET SONT
+ÉCRITES TELLES QUELLES POUR ÊTRE TRACÉES EN AVAL (silver, cf.
+21_silver_transform.sql) :
+
+  · une date de naissance illisible produit un `birth_year` VIDE, jamais une
+    exception — le sujet range « dates valides » parmi les contrôles à
+    DÉTECTER et tracer, pas à bloquer ;
+  · un `patient_id` vide (après nettoyage des espaces) produit un pseudonyme
+    VIDE, SANS hachage — le hacher produirait un pseudonyme valide partagé
+    par toutes les lignes sans identifiant : un faux patient à N séjours, qui
+    gonflerait la réadmission.
 """
 
 from __future__ import annotations
@@ -46,7 +58,16 @@ def _sel() -> bytes:
 
 @lru_cache(maxsize=100_000)
 def pseudonymiser(patient_id: str) -> str:
-    """Pseudonyme stable et non réversible d'un identifiant patient."""
+    """Pseudonyme stable et non réversible d'un identifiant patient.
+
+    Un IPP vide (après nettoyage des espaces) n'identifie personne : le
+    hacher produirait un pseudonyme valide, déterministe, PARTAGÉ par toutes
+    les lignes sans identifiant — un faux patient à N séjours qui gonflerait
+    la réadmission. On renvoie donc une chaîne vide, sans hachage ; silver
+    écarte toute ligne au pseudonyme vide (motif 'patient_manquant').
+    """
+    if not patient_id.strip():
+        return ""
     empreinte = hmac.new(_sel(), patient_id.encode("utf-8"), hashlib.sha256)
     return empreinte.hexdigest()[:LONGUEUR_PSEUDO]
 
@@ -55,12 +76,17 @@ def annee_naissance(birth_date: str) -> str:
     """Généralise une date de naissance à l'année.
 
     Les dates sont au format ISO dans la source ; toute autre forme est une
-    anomalie que l'on laisse remonter plutôt que de la deviner.
+    anomalie. On ne la laisse plus remonter comme exception : le sujet range
+    « dates valides » parmi les contrôles à DÉTECTER et tracer, pas à
+    bloquer — une exception ici ferait échouer l'ingestion du JOUR ENTIER
+    pour un seul patient. On renvoie donc une valeur vide ; bronze la lit en
+    NULL (mode tolérant, cf. eds/warehouse.py) et silver conserve le patient
+    avec `birth_year` NULL, signalé en quarantaine.
     """
     valeur = (birth_date or "").strip()
     if len(valeur) >= 4 and valeur[:4].isdigit():
         return valeur[:4]
-    raise ValueError(f"Date de naissance non exploitable : {birth_date!r}")
+    return ""
 
 
 def _ligne_patient(ligne: dict[str, str]) -> dict[str, str]:

@@ -113,12 +113,17 @@ def _seulement_commentaires(bloc: str) -> bool:
 
 
 def _sql_patients(jour: str, run_id: str) -> str:
+    # birth_year est lu en STRING puis converti en mode TOLÉRANT
+    # (`toUInt16OrNull`) : une date de naissance illisible produit une valeur
+    # vide dans le lake (cf. eds/lake.py `annee_naissance`), donc un NULL ici
+    # — au lieu de faire échouer le chargement du jour ENTIER. Le patient
+    # reste conservé, silver le trace en quarantaine.
     return f"""
     INSERT INTO bronze.patients
-    SELECT patient_pseudo, birth_year, sex, region_code,
+    SELECT patient_pseudo, toUInt16OrNull(birth_year), sex, region_code,
            toDate('{jour}'), replaceOne(_path, '/var/lib/clickhouse/user_files/', ''), now(), '{run_id}'
     FROM file('{LAKE_CH}/patients/{jour}/patients.csv', CSVWithNames,
-              'patient_pseudo String, birth_year UInt16,
+              'patient_pseudo String, birth_year String,
                sex String, region_code String')
     """
 

@@ -221,8 +221,15 @@ __marimo__/
 # Les fichiers sources contiennent l'identité en clair (nom, prénom, NIR).
 # Ils ne doivent jamais entrer dans l'historique git : un commit ne se retire pas.
 eds-chu-sujet/source-filestorage/
+# Corrigé de l'intervenant : « ne pas distribuer »
+eds-chu-sujet/REPONSES-KPI-niveau1.pdf
+eds-chu-sujet/corrige-kpi-niveau1.json
 landing/
 lake/
+
+# Journaux du serveur ClickHouse : montés depuis le conteneur
+# (docker-compose.yml), ils atteignent vite plusieurs centaines de Mo.
+docker/clickhouse/logs/
 # Le répertoire doit exister avant `docker compose up` : il est monté dans
 # ClickHouse. Sans lui, Docker le crée lui-même et le pipeline ne peut plus y écrire.
 !lake/.gitkeep

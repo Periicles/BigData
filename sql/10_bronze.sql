@@ -9,10 +9,20 @@
 -- a été traitée, par quelle exécution).
 -- ─────────────────────────────────────────────────────────────────────────
 
+-- birth_year est NULLABLE : une date de naissance illisible dans la source
+-- (cf. eds/lake.py `annee_naissance`) ne doit pas faire échouer le
+-- chargement du jour ENTIER. Elle entre en NULL pour être comptée et
+-- tracée ; silver conserve le patient (attribut descriptif, comme le sexe)
+-- et signale la ligne en quarantaine.
+--
+-- patient_pseudo peut être une chaîne VIDE : un patient_id vide en source ne
+-- produit pas de hachage (cf. eds/lake.py `pseudonymiser`). Silver écarte
+-- ces lignes, motif 'patient_manquant' — les conserver agrégerait toutes les
+-- lignes sans identifiant sous un faux patient partagé.
 CREATE TABLE IF NOT EXISTS bronze.patients
 (
     patient_pseudo  String,
-    birth_year      UInt16,
+    birth_year      Nullable(UInt16),
     sex             LowCardinality(String),
     region_code     LowCardinality(String),
 

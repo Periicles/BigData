@@ -225,7 +225,14 @@ et non conservé tel quel.
 
 1. **Deux stratégies d'ingestion distinctes** — upsert pour `patients`, append pour les trois autres.
 2. **Partitionner sur la donnée, pas sur le dépôt** — l'écart entre jour de dépôt et `ts` du monitoring impose de dater les faits par leur horodatage métier.
-3. **Une couche de rejet est indispensable** — 68 + 858 + 528 lignes à écarter, à isoler et à compter, jamais à supprimer silencieusement.
+3. **Une couche de rejet est indispensable** — 68 + 858 lignes à écarter (926 au
+   total), à isoler et à compter, jamais à supprimer silencieusement — et un
+   mécanisme de **signalement**, distinct du rejet, pour les 528 relevés
+   postérieurs à la sortie : 520 d'entre eux portent un séjour dont la
+   cohérence temporelle est elle-même en cause (§ 3.1) et échappent de ce fait
+   au contrôle plutôt que de l'enfreindre, seuls 8 étant réellement écartés
+   pour capteur hors plage (§ 3.3.b). Décision prise après l'exploration :
+   documentée au rapport de conception, §§ 2.8-2.9.
 4. **Trois arbitrages à documenter** : le sort de `discharge_mode` absent, le sort de `temp_c` sur les relevés à capteur en panne, le sort des relevés post-sortie.
 5. **Le cloisonnement pilotage / recherche a une traduction technique précise** : granularité de l'âge différente entre les deux couches, et non seulement des droits d'accès différents.
 

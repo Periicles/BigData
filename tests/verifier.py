@@ -1,4 +1,4 @@
-"""Contrôles automatisés de l'entrepôt — quatre sections indépendantes.
+"""Contrôles automatisés de l'entrepôt — cinq sections indépendantes.
 
   pseudonymisation  les identités réelles de la source sont rejouées contre
                     l'intégralité du lake ; aucune ne doit s'y trouver
@@ -9,25 +9,49 @@
                     valeur restituée, et la propriété qui la fonde
   rgpd              les cinq contraintes du § 5, vérifiées sur l'entrepôt réel,
                     plus l'absence de donnée personnelle dans les journaux
+  conformite        confrontation directe aux valeurs de référence fournies
+                    par l'intervenant (silver, KPI 1 à 6) — écart exact
+                    exigé sur les comptages, ±0,1 sur les moyennes
 
 Ce sont des preuves, pas des déclarations : chacune interroge l'état réel et
 échoue si la propriété annoncée ne tient pas.
 
-    python -m tests.verifier            # les quatre sections
+    python -m tests.verifier            # les cinq sections
     python -m tests.verifier rgpd       # une seule
 """
 
 from __future__ import annotations
 
 import csv
+import json
 import re
 import sys
 from collections import defaultdict
 
 from eds import choisir_sections
 from eds.config import LAKE, RACINE, SOURCE, seuils_alerte
-from eds.lake import lister_jours, pseudonymiser
+from eds.lake import _ligne_patient, lister_jours, pseudonymiser
 from eds.warehouse import client
+
+# Valeurs de référence fournies par l'intervenant — fichier LOCAL, non
+# versionné (cf. .gitignore) : absent sur une machine qui n'a pas reçu le
+# fichier de référence, il ne doit donc jamais faire échouer la suite, seulement priver
+# certains contrôles de leur cible externe.
+_REFERENCE = RACINE / "eds-chu-sujet" / "corrige-kpi-niveau1.json"
+
+
+def _valeurs_reference(section: str) -> dict | None:
+    """Section `section` des valeurs de référence, ou None si le fichier est absent."""
+    if not _REFERENCE.exists():
+        return None
+    return json.loads(_REFERENCE.read_text(encoding="utf-8")).get(section)
+
+
+def _reference_complete() -> dict | None:
+    """Les valeurs de référence entières, ou None si le fichier est absent (cf. `_REFERENCE`)."""
+    if not _REFERENCE.exists():
+        return None
+    return json.loads(_REFERENCE.read_text(encoding="utf-8"))
 
 ROUGE, VERT, GRIS, RAZ = "\033[31m", "\033[32m", "\033[90m", "\033[0m"
 
@@ -149,12 +173,51 @@ def qualite(r: Rapport) -> None:
                        WHERE source = '{source}' AND action = 'ecarte'""")
         r.egal(f"{source} : {silver} + {rejets}", silver + rejets, bronze)
 
+    r.titre("Valeurs de référence — silver (fournies par l'intervenant)")
+    # Décision de l'intervenant : la cohérence temporelle d'un séjour n'écarte
+    # plus ses diagnostics ni ses relevés (cf. 21_silver_transform.sql) — d'où
+    # ces deux cibles, distinctes de celles qui prévalaient avant la décision.
+    ref_silver = _valeurs_reference("silver")
+    if ref_silver is None:
+        r.controle("corrige-kpi-niveau1.json absent — contrôle ignoré", True)
+    else:
+        r.egal("silver.monitoring", n("SELECT count() FROM silver.monitoring"),
+               ref_silver["monitoring"])
+        # Le fichier fourni ne porte pas de clé 'diagnostics' : la valeur
+        # 12 720 est donc donnée EN DUR ici, telle que communiquée par
+        # l'intervenant dans sa décision (« silver.diagnostics = 12 720,
+        # aucun écart »), plutôt que lue du fichier. Se rabattre sur
+        # bronze.diagnostics ferait de ce contrôle un doublon strict de
+        # l'équation de conservation ci-dessus (silver + rejets = bronze,
+        # avec rejets = 0 pour cette source) : une dérive de
+        # bronze.diagnostics lui-même (ingestion, dédoublonnage) ne serait
+        # alors détectée par AUCUN des deux contrôles.
+        r.egal("silver.diagnostics (valeur communiquée par l'intervenant)",
+               n("SELECT count() FROM silver.diagnostics"),
+               ref_silver.get("diagnostics", 12_720))
+
     r.titre("Déduplication du snapshot cumulatif")
-    r.egal(f"patients : {n('SELECT count() FROM bronze.patients')} lignes -> patients distincts",
+    # L'équation n'est pas ligne à ligne (snapshot cumulatif) : ce qui se
+    # compare, c'est le nombre de PATIENTS DISTINCTS identifiés (pseudonyme
+    # non vide) à silver.patients — un patient_id vide n'identifie personne,
+    # il est exclu des deux côtés, motif 'patient_manquant' (cf.
+    # 21_silver_transform.sql).
+    requete_patients_identifies = "SELECT uniqExact(patient_pseudo) FROM bronze.patients WHERE patient_pseudo != ''"
+    r.egal(f"patients identifiés : {n(requete_patients_identifies)} -> silver.patients",
            n("SELECT count() FROM silver.patients"),
-           n("SELECT uniqExact(patient_pseudo) FROM bronze.patients"))
+           n(requete_patients_identifies))
     r.egal("aucun doublon en silver.patients",
            n("SELECT count() - uniqExact(patient_pseudo) FROM silver.patients"), 0)
+
+    # Un patient_id vide en source pseudonymise en chaîne VIDE, sans hachage
+    # (cf. eds/lake.py) : un pseudonyme haché aurait été un faux patient
+    # partagé par toutes les lignes sans identifiant, gonflant la
+    # réadmission. Ni patients ni séjours ne doivent donc jamais porter ce
+    # pseudonyme vide en silver — motif 'patient_manquant', toujours écarté.
+    r.egal("aucun pseudonyme vide en silver.patients",
+           n("SELECT countIf(patient_pseudo = '') FROM silver.patients"), 0)
+    r.egal("aucun pseudonyme vide en silver.sejours",
+           n("SELECT countIf(patient_pseudo = '') FROM silver.sejours"), 0)
 
     # Une correction n'est pas une exclusion : elle ne doit jamais entrer dans
     # l'équation, sinon corriger une valeur ferait disparaître une ligne du
@@ -186,6 +249,16 @@ def qualite(r: Rapport) -> None:
                 WHERE heart_rate NOT BETWEEN 20 AND 250
                    OR spo2 NOT BETWEEN 50 AND 100
                    OR temp_c NOT BETWEEN 30 AND 45"""), 0)
+    # Règle dérivée (au-delà de la liste littérale du §3, cf. l'en-tête de
+    # 21_silver_transform.sql) : un relevé hors de la fenêtre de son séjour
+    # — avant l'admission, ou après la sortie d'un séjour clos — n'est pas
+    # une alerte, c'est une donnée invalide. Sans ce contrôle, un tel relevé
+    # traverserait silver sans bruit.
+    r.egal("aucun relevé hors de la fenêtre de son séjour en silver",
+           n("""SELECT count() FROM silver.monitoring AS m
+                INNER JOIN silver.sejours AS s ON m.stay_id = s.stay_id
+                WHERE m.ts < s.admission_ts
+                   OR (s.discharge_ts IS NOT NULL AND m.ts > s.discharge_ts)"""), 0)
 
     # « Valeurs manquantes / formats » — la ligne du §3 que couvrent les deux
     # contrôles suivants. La source est propre aujourd'hui : ce qui est vérifié
@@ -204,16 +277,111 @@ def qualite(r: Rapport) -> None:
                   AND stay_id NOT IN (SELECT cle FROM quarantaine.rejets
                                       WHERE source = 'sejours' AND motif = 'date_illisible')"""), 0)
 
+    # Un patient_id vide en source ne bloque plus la journée (cf.
+    # eds/lake.py) : le lake écrit une valeur vide plutôt que de lever une
+    # exception, avant même que bronze ou silver n'entrent en jeu. Vérifié
+    # directement sur les fonctions de transformation, à la source du
+    # comportement — pas seulement sur ses conséquences en aval.
+    ligne = _ligne_patient({
+        "patient_id": "IPP999999", "birth_date": "n/a — illisible",
+        "sex": "F", "region_code": "75",
+    })
+    r.egal("lake : date de naissance illisible -> birth_year vide",
+           ligne["birth_year"], "")
+    r.egal("lake : patient_id vide -> pseudonyme vide, sans hachage",
+           pseudonymiser(""), "")
+    r.egal("lake : patient_id fait uniquement d'espaces -> pseudonyme vide",
+           pseudonymiser("   "), "")
+    r.egal("lake : patient_id renseigné -> pseudonyme haché, non vide",
+           pseudonymiser("IPP999999") != "", True)
+
+    r.titre("Motifs de quarantaine connus, par source")
+    # Liste blanche, tenue à jour à chaque nouveau motif : un motif observé qui
+    # n'y figure pas — faute de frappe dans le SQL, oubli de mise à jour de
+    # cette liste — se voit ici, plutôt que de s'accumuler silencieusement en
+    # quarantaine sous un nom que plus rien ne documente. `releve_hors_sejour`
+    # y figure alors même qu'il n'attrape aucune ligne sur ce dépôt (cf.
+    # 21_silver_transform.sql, section MONITORING) : la liste documente la
+    # règle qui EXISTE, pas seulement celle qui s'est déjà exercée.
+    MOTIFS_CONNUS = {
+        "patients": {"patient_manquant", "sexe_non_normalise", "date_naissance_illisible"},
+        "sejours": {"patient_manquant", "date_illisible", "incoherence_temporelle"},
+        # 'sejour_ecarte' ne porte plus que le patient manquant (patient_pseudo
+        # vide) : la cohérence temporelle du séjour porteur n'écarte plus ses
+        # diagnostics ni ses relevés (décision de l'intervenant, cf.
+        # 21_silver_transform.sql). 'sejour_inconnu' couvre l'autre cas —
+        # aucune trace du séjour porteur en bronze.
+        "diagnostics": {"sejour_ecarte", "sejour_inconnu"},
+        "monitoring": {"capteur_hors_plage", "sejour_ecarte", "sejour_inconnu", "releve_hors_sejour"},
+    }
+    r.controle("'releve_hors_sejour' figure dans la liste connue de 'monitoring'",
+               "releve_hors_sejour" in MOTIFS_CONNUS["monitoring"])
+    for source, motifs_attendus in MOTIFS_CONNUS.items():
+        motifs_observes = {
+            m for (m,) in ch.query(
+                f"SELECT DISTINCT motif FROM quarantaine.rejets WHERE source = '{source}'"
+            ).result_rows
+        }
+        inconnus = motifs_observes - motifs_attendus
+        r.controle(f"{source} : aucun motif observé hors de la liste connue",
+                   not inconnus, f"motif(s) inattendu(s) : {inconnus}" if inconnus else "")
+
     r.titre("Intégrité référentielle de silver")
     r.egal("aucun séjour orphelin de patient",
            n("""SELECT count() FROM silver.sejours
                 WHERE patient_pseudo NOT IN (SELECT patient_pseudo FROM silver.patients)"""), 0)
-    r.egal("aucun diagnostic orphelin de séjour",
+    # Un diagnostic ou un relevé n'est plus rattaché à silver.sejours : sa
+    # seule exigence est d'exister dans bronze.sejours (décision de
+    # l'intervenant — la cohérence temporelle de silver.sejours n'entre pas
+    # dans ce test, cf. 21_silver_transform.sql). Le rattachement au séjour
+    # RETENU de silver.sejours, lui, est vérifié séparément ci-dessous via le
+    # drapeau `sejour_coherent`.
+    r.egal("aucun diagnostic orphelin de séjour (bronze.sejours)",
            n("""SELECT count() FROM silver.diagnostics
-                WHERE stay_id NOT IN (SELECT stay_id FROM silver.sejours)"""), 0)
-    r.egal("aucun relevé orphelin de séjour",
+                WHERE stay_id NOT IN (SELECT stay_id FROM bronze.sejours)"""), 0)
+    r.egal("aucun relevé orphelin de séjour (bronze.sejours)",
            n("""SELECT count() FROM silver.monitoring
-                WHERE stay_id NOT IN (SELECT stay_id FROM silver.sejours)"""), 0)
+                WHERE stay_id NOT IN (SELECT stay_id FROM bronze.sejours)"""), 0)
+    # Le drapeau doit être l'exacte image de la présence dans silver.sejours —
+    # ni en avance (un séjour non retenu marqué cohérent), ni en retard (un
+    # séjour retenu marqué incohérent).
+    r.egal("silver.diagnostics.sejour_coherent conforme à silver.sejours",
+           n("""SELECT count() FROM silver.diagnostics
+                WHERE sejour_coherent != (stay_id IN (SELECT stay_id FROM silver.sejours))"""), 0)
+    r.egal("silver.monitoring.sejour_coherent conforme à silver.sejours",
+           n("""SELECT count() FROM silver.monitoring
+                WHERE sejour_coherent != (stay_id IN (SELECT stay_id FROM silver.sejours))"""), 0)
+
+    # Le drapeau `sejour_coherent` atteste la PRÉSENCE du séjour porteur,
+    # mais rien ne garantit, sans ce contrôle, que patient_pseudo,
+    # service_code et admission_ts recopiés sont bien ceux de la version
+    # RETENUE de bronze.sejours (même row_number() PARTITION BY stay_id
+    # ORDER BY _jour_depot DESC qu'en 21_silver_transform.sql) — une
+    # mauvaise clé de jointure, service_code et patient_pseudo inversés, ou
+    # une version non retenue en cas de doublon, passerait inaperçus tant
+    # qu'ils ne cassent ni l'équation de conservation ni ce drapeau. Contrôle
+    # en VOLUME sur les 12 720 diagnostics et 40 920 relevés réels — pas
+    # seulement sur l'unique cas synthétique de tests.demontrer qualite.
+    version_retenue = """
+        SELECT stay_id, patient_pseudo, service_code, admission_ts
+        FROM (
+            SELECT stay_id, patient_pseudo, service_code, admission_ts,
+                   row_number() OVER (
+                       PARTITION BY stay_id ORDER BY _jour_depot DESC
+                   ) AS rang
+            FROM bronze.sejours
+        )
+        WHERE rang = 1
+    """
+    for table in ("diagnostics", "monitoring"):
+        r.egal(f"silver.{table} : patient/service/admission conformes à la version retenue de bronze.sejours",
+               n(f"""SELECT count() FROM silver.{table} AS x
+                     INNER JOIN ({version_retenue}) AS s ON x.stay_id = s.stay_id
+                     WHERE x.patient_pseudo != s.patient_pseudo
+                        OR x.service_code   != s.service_code
+                        OR (x.admission_ts IS NULL) != (s.admission_ts IS NULL)
+                        OR (x.admission_ts IS NOT NULL AND x.admission_ts != s.admission_ts)"""), 0)
+
     r.egal("aucun service non résolu",
            n("SELECT count() FROM silver.sejours WHERE service_label = 'inconnu'"), 0)
     r.egal("aucun code CIM-10 non résolu",
@@ -250,10 +418,44 @@ def qualite(r: Rapport) -> None:
         r.egal(f"{dimension}.{cle} est unique",
                n(f"SELECT count() - uniqExact({cle}) FROM gold_pilotage.{dimension}"), 0)
 
-    # L'âge est dérivé du fait CONTRE la dimension. S'il manquait, c'est que
-    # la jointure a échoué : le contrôle le dit avant que l'indicateur ne sorte.
-    r.egal("age_au_sejour résolu pour tout séjour",
-           n("SELECT count() FROM gold_pilotage.fact_sejour WHERE age_au_sejour IS NULL"), 0)
+    # L'âge est dérivé du fait CONTRE la dimension. Depuis que `birth_year`
+    # est Nullable (date de naissance illisible, tracée dès silver), un âge
+    # manquant n'est plus forcément une jointure ratée — il peut légitimement
+    # venir d'un `birth_year` NULL en dimension. Les deux causes sont donc
+    # distinguées : l'orphelin fait -> dimension est déjà couvert plus haut
+    # (`fact_sejour.patient_pseudo -> dim_patient`) ; ici, on vérifie que
+    # l'absence d'âge coïncide EXACTEMENT avec l'absence de birth_year, ni
+    # plus (jointure qui se dégraderait) ni moins (calcul qui masquerait un
+    # NULL).
+    # fact_sejour : une seule cause d'âge manquant — birth_year absent en
+    # dimension. admission_ts n'y est jamais NULL (silver.sejours écarte tout
+    # séjour à admission illisible), donc pas de second facteur à couvrir ici.
+    r.egal("fact_sejour.age_au_sejour NULL si et seulement si dim_patient.birth_year NULL",
+           n("""SELECT count() FROM gold_pilotage.fact_sejour AS f
+                INNER JOIN gold_pilotage.dim_patient AS p USING (patient_pseudo)
+                WHERE (f.age_au_sejour IS NULL) != (p.birth_year IS NULL)"""), 0)
+    r.egal("fact_sejour.tranche_age 'inconnu' si et seulement si dim_patient.birth_year NULL",
+           n("""SELECT count() FROM gold_pilotage.fact_sejour AS f
+                INNER JOIN gold_pilotage.dim_patient AS p USING (patient_pseudo)
+                WHERE (f.tranche_age = 'inconnu') != (p.birth_year IS NULL)"""), 0)
+
+    # fact_diagnostic : DEUX causes INDÉPENDANTES d'un âge manquant — un
+    # birth_year absent en dimension, OU une date_admission NULLE (séjour au
+    # patient identifié mais à admission illisible, silver.diagnostics porte
+    # alors admission_ts NULL — cf. 31_gold_transform.sql). Un contrôle qui
+    # ne testerait que birth_year échouerait à tort sur ce second cas,
+    # pourtant conforme à la spec (démontré par tests.demontrer qualite,
+    # DEMO_SEJOUR_ADM_NULL) — d'où le OR ci-dessous, absent de fact_sejour.
+    r.egal("fact_diagnostic.age_au_sejour NULL si et seulement si birth_year ou date_admission NULL",
+           n("""SELECT count() FROM gold_pilotage.fact_diagnostic AS f
+                INNER JOIN gold_pilotage.dim_patient AS p USING (patient_pseudo)
+                WHERE (f.age_au_sejour IS NULL)
+                      != (p.birth_year IS NULL OR f.date_admission IS NULL)"""), 0)
+    r.egal("fact_diagnostic.tranche_age 'inconnu' si et seulement si birth_year ou date_admission NULL",
+           n("""SELECT count() FROM gold_pilotage.fact_diagnostic AS f
+                INNER JOIN gold_pilotage.dim_patient AS p USING (patient_pseudo)
+                WHERE (f.tranche_age = 'inconnu')
+                      != (p.birth_year IS NULL OR f.date_admission IS NULL)"""), 0)
     r.egal("silver ne calcule plus d'âge ni d'alerte",
            n("""SELECT count() FROM system.columns
                 WHERE database = 'silver'
@@ -277,16 +479,22 @@ COHERENCE_KPI = {
         ("service_code", "mois"),
     ),
     "kpi_urgences_jour": (
-        "jour, nb_passages AS mesure, nb_sejours AS effectif",
-        """SELECT date_admission AS jour, countIf(est_urgence) AS mesure,
+        # `nb_passages_urgences` (service URGENCES) est la mesure confrontée
+        # au fait ; `nb_admissions_en_urgence` (mode d'admission) est vérifiée
+        # séparément dans indicateurs(), au même titre que ce second axe.
+        "jour, nb_passages_urgences AS mesure, nb_sejours AS effectif",
+        """SELECT date_admission AS jour, countIf(service_code = 'URGENCES') AS mesure,
                   count() AS effectif
            FROM gold_pilotage.fact_sejour GROUP BY jour""",
         ("jour",),
     ),
     "kpi_readmission_service": (
-        "service_code, nb_readmis_30j AS mesure, nb_sejours_index AS effectif",
-        """SELECT service_code, sum(suivi_readmission_30j) AS mesure,
-                  sum(est_sejour_index) AS effectif
+        # BRUT — définition de référence de l'intervenant : dénominateur =
+        # tous les séjours. La variante AJUSTÉE est vérifiée séparément dans
+        # indicateurs(), les deux définitions étant portées côte à côte.
+        "service_code, nb_readmis_30j_brut AS mesure, nb_sejours AS effectif",
+        """SELECT service_code, sum(readmission_30j_brute) AS mesure,
+                  count() AS effectif
            FROM gold_pilotage.fact_sejour GROUP BY service_code""",
         ("service_code",),
     ),
@@ -311,6 +519,21 @@ COHERENCE_KPI = {
            FROM gold_pilotage.fact_diagnostic WHERE est_principal = 1
            GROUP BY service_code, code_cim10""",
         ("service_code", "code_cim10"),
+    ),
+    # Les deux mesures de la table (nb_patients ET nb_sejours) sont ici
+    # confrontées à DEUX recalculs indépendants — pas le même recalcul dupliqué
+    # deux fois. Sans ça, un `uniqExact` remplacé par erreur par `count()`
+    # donnerait nb_patients = nb_sejours partout : une valeur fausse, mais
+    # toujours <= nb_sejours, qui passerait le garde-fou de l'indicateur ⑩
+    # sans qu'aucun contrôle ne la détecte.
+    "kpi_origine_service": (
+        "service_code, region_code, nb_patients AS mesure, nb_sejours AS effectif",
+        """SELECT f.service_code, p.region AS region_code,
+                  uniqExact(f.patient_pseudo) AS mesure, count() AS effectif
+           FROM gold_pilotage.fact_sejour AS f
+           INNER JOIN gold_pilotage.dim_patient AS p ON f.patient_pseudo = p.patient_pseudo
+           GROUP BY f.service_code, region_code""",
+        ("service_code", "region_code"),
     ),
 }
 
@@ -340,7 +563,7 @@ def indicateurs(r: Rapport) -> None:
     """Les indicateurs du §4, calculés depuis gold et affichés.
 
     Les quatre indicateurs nommés du pilotage, les deux de la recherche, et
-    les trois vues qui remplissent la cinquième ligne — « toute autre vue
+    les quatre vues qui remplissent la cinquième ligne — « toute autre vue
     d'activité pertinente ».
 
     Un indicateur juste par construction ne prouve rien : chaque bloc montre
@@ -391,49 +614,92 @@ def indicateurs(r: Rapport) -> None:
     r.egal("dispersion ordonnée : médiane <= P90 <= max",
            n("""SELECT count() FROM gold_pilotage.kpi_dms_service
                 WHERE NOT (mediane_jours <= p90_jours AND p90_jours <= max_jours)"""), 0)
+    # dms_heures est la même moyenne que dms_jours, en heures — recalculée
+    # indépendamment (et non dms_jours * 24) pour ne pas composer deux
+    # arrondis dans le calcul lui-même. La tolérance encaisse ceux qui
+    # restent légitimes une fois les deux colonnes déjà arrondies : jusqu'à
+    # 0,005 jour (0,12 h) sur dms_jours, plus 0,05 h sur dms_heures.
+    r.egal("dms_heures cohérente avec dms_jours (±0,2 h)",
+           n("""SELECT count() FROM gold_pilotage.kpi_dms_service
+                WHERE abs(dms_heures - dms_jours * 24) > 0.2"""), 0)
 
     # ② Passages aux urgences par jour ------------------------------------
+    # Deux lectures, cf. § 2.10 du rapport : `nb_passages_urgences` (service
+    # URGENCES) est la définition de référence retenue pour l'indicateur
+    # nommé au § 4 ; `nb_admissions_en_urgence` (mode d'admission, tous
+    # services) reste exposée à côté, en mesure complémentaire.
     r.titre("② Passages aux urgences, par jour")
-    total_urgences = n("SELECT countIf(est_urgence) FROM gold_pilotage.fact_sejour")
+    nb_passages = n("SELECT countIf(service_code = 'URGENCES') FROM gold_pilotage.fact_sejour")
+    nb_admissions_urgence = n("SELECT countIf(est_urgence) FROM gold_pilotage.fact_sejour")
     serie = lignes("""
         SELECT count(), min(nb), round(avg(nb), 1), max(nb), sum(nb) FROM (
-            SELECT date_admission, countIf(est_urgence) AS nb
+            SELECT date_admission, countIf(service_code = 'URGENCES') AS nb
             FROM gold_pilotage.fact_sejour GROUP BY date_admission)""")[0]
     jours, mini, moyen, maxi, cumul = serie
-    r.valeur("total sur la période", f"{total_urgences} passages")
-    r.valeur(f"par jour sur {jours} jours", f"min {mini} · moyenne {moyen} · max {maxi}")
-    r.egal("la série journalière somme au total", cumul, total_urgences)
+    r.valeur("passages, service URGENCES (référence)", f"{nb_passages} séjours")
+    r.valeur("admissions en mode urgence (complémentaire)",
+             f"{nb_admissions_urgence} séjours, tous services")
+    r.valeur(f"passages par jour sur {jours} jours", f"min {mini} · moyenne {moyen} · max {maxi}")
+    r.egal("la série journalière somme au total", cumul, nb_passages)
     # L'axe est la date d'ADMISSION du fait, jamais le jour de dépôt : les
     # deux diffèrent, et confondre les deux daterait mal chaque passage.
     r.egal("est_urgence ne qualifie que les admissions en urgence",
            n("""SELECT count() FROM gold_pilotage.fact_sejour
                 WHERE est_urgence != (admission_mode = 'urgence')"""), 0)
     _coherence_kpi(r, "kpi_urgences_jour")
+    r.egal("kpi_urgences_jour.nb_admissions_en_urgence cohérent avec le fait",
+           n("SELECT sum(nb_admissions_en_urgence) FROM gold_pilotage.kpi_urgences_jour"),
+           nb_admissions_urgence)
 
     # ③ Taux de réadmission à 30 jours ------------------------------------
     # Numérateur et dénominateur sont posés dans le fait, pas laissés au
     # consommateur : c'est une auto-jointure, et deux calculs concurrents
-    # donneraient deux taux.
+    # donneraient deux taux. Deux définitions, l'une à côté de l'autre — cf.
+    # l'en-tête de kpi_readmission_service en 30_gold.sql.
     r.titre("③ Taux de réadmission à 30 jours")
+
+    # BRUT — définition de référence de l'intervenant : dénominateur = TOUS
+    # les séjours, numérateur = tout séjour clos (décès compris) suivi d'une
+    # réadmission du même patient sous 30 j.
+    total_, brut = lignes("""
+        SELECT count(), sum(readmission_30j_brute)
+        FROM gold_pilotage.fact_sejour""")[0]
+    r.valeur("taux brut (référence § 4)", f"{round(100 * brut / total_, 2)} %   "
+                     f"{GRIS}{brut} réadmissions sur {total_} séjours{RAZ}")
+    r.controle("le numérateur brut est inclus dans le dénominateur brut", brut <= total_,
+               f"{brut} / {total_}")
+    _coherence_kpi(r, "kpi_readmission_service")
+
+    # AJUSTÉ — dénominateur restreint aux séjours clos et non décédés : un
+    # patient réadmis après un décès enregistré est une incohérence de
+    # saisie, que cette variante exclut. La référence, elle, ne l'exclut pas
+    # — c'est pourquoi le taux BRUT ci-dessus est celui publié au § 4.
     index_, readmis = lignes("""
         SELECT sum(est_sejour_index), sum(suivi_readmission_30j)
         FROM gold_pilotage.fact_sejour""")[0]
-    r.valeur("taux", f"{round(100 * readmis / index_, 2)} %   "
-                     f"{GRIS}{readmis} réadmissions sur {index_} séjours index{RAZ}")
-    r.controle("le numérateur est inclus dans le dénominateur", readmis <= index_,
+    r.valeur("taux ajusté (complément documenté)",
+             f"{round(100 * readmis / index_, 2)} %   "
+             f"{GRIS}{readmis} réadmissions sur {index_} séjours index{RAZ}")
+    r.controle("le numérateur ajusté est inclus dans le dénominateur ajusté", readmis <= index_,
                f"{readmis} / {index_}")
-    r.egal("aucune réadmission portée par un séjour hors dénominateur",
+    r.egal("aucune réadmission ajustée portée par un séjour hors dénominateur ajusté",
            n("""SELECT count() FROM gold_pilotage.fact_sejour
                 WHERE suivi_readmission_30j = 1 AND est_sejour_index = 0"""), 0)
-    # Un patient déclaré décédé puis « réadmis » fausserait le taux : la règle
-    # métier standard exclut ces séjours du dénominateur.
-    r.egal("aucun séjour clos par décès dans le dénominateur",
+    # Un patient déclaré décédé puis « réadmis » fausserait le taux ajusté :
+    # cette variante exclut ces séjours du dénominateur (la variante brute,
+    # elle, les garde — c'est toute la différence entre les deux).
+    r.egal("aucun séjour clos par décès dans le dénominateur ajusté",
            n("""SELECT count() FROM gold_pilotage.fact_sejour
                 WHERE est_sejour_index = 1 AND discharge_mode = 'deces'"""), 0)
-    r.egal("aucun séjour en cours dans le dénominateur",
+    r.egal("aucun séjour en cours dans le dénominateur ajusté",
            n("""SELECT count() FROM gold_pilotage.fact_sejour
                 WHERE est_sejour_index = 1 AND est_en_cours = 1"""), 0)
-    _coherence_kpi(r, "kpi_readmission_service")
+    r.egal("kpi_readmission_service (ajusté) : dénominateur cohérent avec le fait",
+           n("SELECT sum(nb_sejours_index) FROM gold_pilotage.kpi_readmission_service"),
+           index_)
+    r.egal("kpi_readmission_service (ajusté) : numérateur cohérent avec le fait",
+           n("SELECT sum(nb_readmis_30j) FROM gold_pilotage.kpi_readmission_service"),
+           readmis)
 
     # ④ Relevés en alerte -------------------------------------------------
     r.titre("④ Relevés de constantes en alerte")
@@ -462,23 +728,30 @@ def indicateurs(r: Rapport) -> None:
     _coherence_kpi(r, "kpi_alertes_jour")
 
     # ⑤ Prévalence par pathologie -----------------------------------------
-    # L'indicateur compte le MOTIF d'hospitalisation, pas la pathologie dans
-    # la population : seul le diagnostic principal entre dans le calcul.
-    r.titre("⑤ Prévalence par pathologie (diagnostic principal)")
-    for pathologie, patients, sejours in lignes("""
-            SELECT pathologie, nb_patients, nb_sejours
+    # `nb_patients` — définition de référence de l'intervenant — compte sur
+    # TOUS les types de diagnostic (principal et associé), séjours
+    # incohérents compris ; c'est elle qui porte le filtre k >= 5.
+    # `nb_patients_principal` (ancienne définition, motif d'hospitalisation
+    # seul) reste affichée à côté, pour comparaison.
+    r.titre("⑤ Prévalence par pathologie (tous diagnostics, référence)")
+    for pathologie, patients, patients_princ, sejours in lignes("""
+            SELECT pathologie, nb_patients, nb_patients_principal, nb_sejours
             FROM gold_recherche.coh_prevalence ORDER BY nb_patients DESC"""):
-        r.valeur(pathologie[:52], f"{patients:>5} patients   {GRIS}{sejours} séjours{RAZ}")
+        r.valeur(pathologie[:44],
+                 f"{patients:>5} patients   "
+                 f"{GRIS}dont {patients_princ} en motif principal · {sejours} séjours{RAZ}")
     r.egal("la prévalence reproduit exactement l'agrégat des faits",
            n("SELECT count() FROM gold_recherche.coh_prevalence"),
            n("""SELECT count() FROM (
                     SELECT code_cim10, uniqExact(patient_pseudo) AS nb
                     FROM gold_pilotage.fact_diagnostic
-                    WHERE est_principal = 1
                     GROUP BY code_cim10 HAVING nb >= 5)"""))
     r.egal("un patient ne peut pas avoir plus de séjours que lui-même",
            n("""SELECT count() FROM gold_recherche.coh_prevalence
                 WHERE nb_sejours < nb_patients"""), 0)
+    r.egal("nb_patients_principal ne peut pas dépasser nb_patients",
+           n("""SELECT count() FROM gold_recherche.coh_prevalence
+                WHERE nb_patients_principal > nb_patients"""), 0)
     r.egal("toute pathologie restituée existe dans la nomenclature",
            n("""SELECT count() FROM gold_recherche.coh_prevalence
                 WHERE code_cim10 NOT IN
@@ -578,6 +851,33 @@ def indicateurs(r: Rapport) -> None:
     r.egal("le case-mix couvre tous les séjours au diagnostic principal",
            n("SELECT sum(nb_sejours) FROM gold_pilotage.kpi_casemix_service"),
            n("""SELECT countIf(est_principal = 1) FROM gold_pilotage.fact_diagnostic"""))
+
+    # ⑩ Origine géographique ------------------------------------------------
+    # « Toute autre vue d'activité pertinente » (§4). C'est l'usage qui
+    # justifie de conserver `region_code` jusqu'en gold (minimisation, §3) :
+    # une donnée conservée sans usage est indéfendable, et cette vue est cet
+    # usage — l'attractivité territoriale du CHU, par service.
+    r.titre("⑩ Origine géographique des séjours, par service")
+    for service, region, sejours, patients, part in lignes("""
+            SELECT service, region_code, nb_sejours, nb_patients, part_pct
+            FROM gold_pilotage.kpi_origine_service
+            ORDER BY nb_sejours DESC LIMIT 4"""):
+        r.valeur(f"{service} · dépt {region}",
+                 f"{part:>5} %   {GRIS}{sejours} séjours, {patients} patients{RAZ}")
+    _coherence_kpi(r, "kpi_origine_service")
+    # Comme le case-mix, la part est calculée SUR LE SERVICE : les parts d'un
+    # même service somment donc à 100.
+    r.egal("les parts d'un service somment à 100 %",
+           n("""SELECT count() FROM (
+                    SELECT service_code, round(sum(part_pct)) AS total
+                    FROM gold_pilotage.kpi_origine_service
+                    GROUP BY service_code HAVING total != 100)"""), 0)
+    r.egal("jamais plus de patients que de séjours",
+           n("""SELECT count() FROM gold_pilotage.kpi_origine_service
+                WHERE nb_patients > nb_sejours"""), 0)
+    r.egal("aucun département de résidence vide",
+           n("""SELECT count() FROM gold_pilotage.kpi_origine_service
+                WHERE region_code = ''"""), 0)
 
 
 # ── RGPD ─────────────────────────────────────────────────────────────────
@@ -685,8 +985,126 @@ def rgpd(r: Rapport) -> None:
                not suspects, f"{len(suspects)} message(s) suspect(s)")
 
 
+# ── Conformité aux valeurs de référence ─────────────────────────────────
+# Les autres sections vérifient des PROPRIÉTÉS de l'entrepôt (équations,
+# intégrité, cohérence table <-> fait) : un contrôle peut passer sans que le
+# chiffre publié soit celui attendu par l'intervenant. Celle-ci confronte
+# directement l'entrepôt aux valeurs de référence fournies, contrôle par contrôle — c'est la
+# seule section qui peut échouer sur une VALEUR juste alors que toutes les
+# propriétés tiennent, et c'est voulu : les définitions de référence font foi.
+_TOLERANCE_MOYENNE = 0.1
+
+
+def _proche(obtenu: float, attendu: float, tolerance: float = _TOLERANCE_MOYENNE) -> bool:
+    return abs(obtenu - attendu) <= tolerance
+
+
+def conformite(r: Rapport) -> None:
+    ref = _reference_complete()
+    if ref is None:
+        print("valeurs de référence absentes, section ignorée")
+        return
+
+    ch = client()
+    n = lambda requete: int(ch.command(requete))
+    ligne = lambda requete: ch.query(requete).result_rows
+
+    r.titre("Silver — comptages exacts")
+    ref_s = ref["silver"]
+    r.egal("silver.patients", n("SELECT count() FROM silver.patients"), ref_s["patients"])
+    r.egal("silver.sejours", n("SELECT count() FROM silver.sejours"), ref_s["sejours"])
+    r.egal("sejours écartés (quarantaine, action='ecarte')",
+           n("""SELECT count() FROM quarantaine.rejets
+                WHERE source = 'sejours' AND action = 'ecarte'"""),
+           ref_s["sejours_ecartes"])
+    r.egal("silver.monitoring", n("SELECT count() FROM silver.monitoring"), ref_s["monitoring"])
+    r.egal("monitoring écarté (quarantaine, action='ecarte')",
+           n("""SELECT count() FROM quarantaine.rejets
+                WHERE source = 'monitoring' AND action = 'ecarte'"""),
+           ref_s["monitoring_ecartes"])
+
+    r.titre("KPI 1 — DMS par service (comptage exact, moyennes ±0,1)")
+    for row in ref["kpi1_dms_service"]:
+        code = row["service_code"]
+        trouve = ligne(f"""SELECT nb_sejours_clos, dms_jours, dms_heures
+                           FROM gold_pilotage.kpi_dms_service
+                           WHERE service_code = '{code}'""")
+        if not trouve:
+            r.controle(f"{code} : présent dans kpi_dms_service", False, "absent")
+            continue
+        nb, dms_j, dms_h = trouve[0]
+        r.egal(f"{code} : nb_sejours", nb, row["nb_sejours"])
+        r.controle(f"{code} : dms_jours ±0,1", _proche(dms_j, row["dms_jours"]),
+                   f"{dms_j} (attendu {row['dms_jours']})")
+        r.controle(f"{code} : dms_heures ±0,1", _proche(dms_h, row["dms_heures"]),
+                   f"{dms_h} (attendu {row['dms_heures']})")
+
+    r.titre("KPI 2 — Réadmission à 30 jours (définition brute, référence)")
+    ref_2 = ref["kpi2_readmission"]
+    num = n("SELECT sum(readmission_30j_brute) FROM gold_pilotage.fact_sejour")
+    den = n("SELECT count() FROM gold_pilotage.fact_sejour")
+    taux = round(100 * num / den, 2) if den else 0.0
+    r.egal("réadmissions à 30 j (numérateur)", num, ref_2["nb_readmissions_30j"])
+    r.egal("séjours (dénominateur)", den, ref_2["nb_sejours"])
+    r.controle("taux ±0,1", _proche(taux, ref_2["taux_pct"]),
+               f"{taux} (attendu {ref_2['taux_pct']})")
+
+    r.titre("KPI 3 — Urgences par jour (comptages exacts, durée ±0,1)")
+    for row in ref["kpi3_urgences_jour"]:
+        jour = row["jour"]
+        trouve = ligne(f"""SELECT nb_passages_urgences, nb_encore_presents, duree_moy_heures
+                           FROM gold_pilotage.kpi_urgences_jour WHERE jour = '{jour}'""")
+        if not trouve:
+            r.controle(f"{jour} : présent dans kpi_urgences_jour", False, "absent")
+            continue
+        nb_p, nb_e, duree = trouve[0]
+        r.egal(f"{jour} : nb_passages_urgences", nb_p, row["nb_passages"])
+        r.egal(f"{jour} : nb_encore_presents", nb_e, row["nb_encore_presents"])
+        r.controle(f"{jour} : duree_moy_heures ±0,1", _proche(duree, row["duree_moy_heures"]),
+                   f"{duree} (attendu {row['duree_moy_heures']})")
+
+    r.titre("KPI 4 — Relevés en alerte, par jour (somme de kpi_alertes_jour, exact)")
+    for row in ref["kpi4_alertes_jour"]:
+        jour = row["jour"]
+        nb_r, nb_a = ligne(f"""SELECT sum(nb_releves), sum(nb_en_alerte)
+                              FROM gold_pilotage.kpi_alertes_jour
+                              WHERE jour = '{jour}'""")[0]
+        nb_r, nb_a = nb_r or 0, nb_a or 0
+        r.egal(f"{jour} : nb_releves", nb_r, row["nb_releves"])
+        r.egal(f"{jour} : nb_alertes", nb_a, row["nb_alertes"])
+
+    r.titre("KPI 5 — Prévalence (11 valeurs exactes, E84 et Q90 sous le seuil)")
+    for row in ref["kpi5_prevalence"]:
+        code = row["code_cim10"]
+        trouve = ligne(f"""SELECT nb_patients FROM gold_recherche.coh_prevalence
+                           WHERE code_cim10 = '{code}'""")
+        if row["diffusable"]:
+            if not trouve:
+                r.controle(f"{code} : présent (attendu diffusable)", False, "absent")
+            else:
+                r.egal(f"{code} : nb_patients", trouve[0][0], row["nb_patients"])
+        else:
+            r.controle(f"{code} : absent (sous le seuil de 5 patients)", not trouve,
+                       f"présent avec nb_patients={trouve[0][0]}" if trouve else "")
+
+    r.titre("KPI 6 — Cohorte âge × sexe (89 cellules exactes, 13 sous le seuil)")
+    echecs_avant = len(r.echecs)
+    for code, tranche, sexe, attendu in ref["kpi6_cohorte_age_sexe"]:
+        trouve = ligne(f"""SELECT nb_patients FROM gold_recherche.coh_description
+                           WHERE code_cim10 = '{code}' AND tranche_age = '{tranche}'
+                             AND sexe = '{sexe}'""")
+        libelle = f"{code} {tranche} {sexe}"
+        if attendu >= 5:
+            r.egal(libelle, trouve[0][0] if trouve else 0, attendu)
+        else:
+            r.controle(f"{libelle} : absent (sous le seuil de 5 patients)", not trouve,
+                       f"présent avec nb_patients={trouve[0][0]}" if trouve else "")
+    if len(r.echecs) == echecs_avant:
+        print(f"{VERT}102 cellules confrontées (89 attendues, 13 sous le seuil) : conforme{RAZ}")
+
+
 SECTIONS = {"pseudonymisation": pseudonymisation, "qualite": qualite,
-            "indicateurs": indicateurs, "rgpd": rgpd}
+            "indicateurs": indicateurs, "rgpd": rgpd, "conformite": conformite}
 
 
 def main(argv: list[str] | None = None) -> int:

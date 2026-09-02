@@ -26,10 +26,21 @@
 --
 -- CE QUI ENTRE ICI : toute ligne qui viole un contrôle qualité du §3 du sujet
 -- — doublon patient, cohérence temporelle, plage physiologique, format de
--- date, sexe non normalisé. Pas les décisions métier documentées : la
--- normalisation de `discharge_mode` vide en 'inconnu' est un choix de
--- modélisation, pas une anomalie détectée, et n'a rien à faire dans un
--- registre d'incidents qualité.
+-- date, sexe non normalisé, identifiant patient absent. Pas les décisions
+-- métier documentées : la normalisation de `discharge_mode` vide en 'inconnu'
+-- est un choix de modélisation, pas une anomalie détectée, et n'a rien à
+-- faire dans un registre d'incidents qualité.
+--
+-- UN DIAGNOSTIC OU UN RELEVÉ N'EST JAMAIS ÉCARTÉ POUR L'INCOHÉRENCE
+-- TEMPORELLE DE SON SÉJOUR (décision de l'intervenant). Cette incohérence
+-- porte sur DEUX COLONNES DE LA TABLE `sejours` (`admission_ts`,
+-- `discharge_ts`) ; elle ne dit rien de la validité d'un code CIM-10 posé
+-- pendant ce séjour, ni d'une mesure prise au chevet du patient — des faits
+-- médicaux distincts, sur d'autres tables. Seule l'absence de patient
+-- identifié écarte réellement un diagnostic ou un relevé (motifs
+-- 'sejour_inconnu', 'sejour_ecarte' — cf. 21_silver_transform.sql) ; la
+-- cohérence temporelle du séjour porteur est SIGNALÉE, en silver, par un
+-- drapeau `sejour_coherent`, jamais par une exclusion.
 -- ─────────────────────────────────────────────────────────────────────────
 
 CREATE TABLE IF NOT EXISTS quarantaine.rejets (

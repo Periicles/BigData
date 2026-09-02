@@ -255,8 +255,15 @@ class Pipeline:
             c["lignes"] = sum(compteurs.values())
 
     def ingerer_referentiels(self) -> None:
-        """Rechargés intégralement : ils ne sont déposés que le premier jour."""
-        jours = [j for j in jours_disponibles() if (LAKE / "referentiels" / j).is_dir()]
+        """Rechargés intégralement : ils ne sont déposés que le premier jour.
+
+        Le jour retenu est celui que porte LA SOURCE, pas le lake. Le lake est
+        cumulatif : il conserve ce qu'un dépôt antérieur y a écrit, y compris
+        un répertoire que la source ne propose plus. Choisir le premier jour
+        présent dans le lake ferait donc charger, un jour, une nomenclature
+        périmée dont plus rien ne signale l'âge.
+        """
+        jours = [j for j in lister_jours("referentiels") if (LAKE / "referentiels" / j).is_dir()]
         if not jours:
             LOG.warning("aucun référentiel dans le lake")
             return
@@ -297,6 +304,18 @@ class Pipeline:
                     "gold_pilotage.fact_releve",
                     "gold_recherche.coh_prevalence",
                     "gold_recherche.coh_description",
+                    # Les tables d'indicateurs sont aussi construites par
+                    # cette étape (31_gold_transform.sql) : les en exclure
+                    # ferait dire au journal qu'il a construit moins que ce
+                    # qu'il a réellement écrit.
+                    "gold_pilotage.kpi_dms_service",
+                    "gold_pilotage.kpi_urgences_jour",
+                    "gold_pilotage.kpi_readmission_service",
+                    "gold_pilotage.kpi_alertes_jour",
+                    "gold_pilotage.kpi_occupation_jour",
+                    "gold_pilotage.kpi_mortalite_service",
+                    "gold_pilotage.kpi_casemix_service",
+                    "gold_pilotage.kpi_origine_service",
                 )
             )
 

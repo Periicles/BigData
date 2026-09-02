@@ -13,7 +13,7 @@
 --  1 ligne = 1 séjour     1 ligne = 1 relevé   1 ligne = 1 code posé
 --
 -- Pourquoi trois faits et non un seul : les grains sont incompatibles. Un
--- séjour porte 1 à 4 diagnostics et 0 à n relevés ; les fusionner
+-- séjour porte 1 à 3 diagnostics et 0 à n relevés ; les fusionner
 -- multiplierait les lignes et fausserait toute somme (le piège classique du
 -- « fan trap »).
 --
@@ -23,6 +23,17 @@
 -- ni un attribut de la personne (il change à chaque séjour) ni une donnée de
 -- la source : il croise `dim_patient.birth_year` et l'axe `date_admission`
 -- du fait, et se calcule donc ici, contre la dimension.
+--
+-- `fact_diagnostic` ET `fact_releve` NE LISENT PLUS `silver.sejours`, NI
+-- PAR INNER NI PAR LEFT JOIN. Depuis la décision de l'intervenant (cf.
+-- l'en-tête de 20_silver.sql et 21_silver_transform.sql), un diagnostic ou
+-- un relevé reste valide même quand son séjour porteur est temporellement
+-- incohérent : un `INNER JOIN silver.sejours` les aurait fait disparaître de
+-- gold pour une anomalie qui ne les concerne pas. `silver.diagnostics` et
+-- `silver.monitoring` portent désormais eux-mêmes le patient, le service,
+-- l'admission ET le drapeau `sejour_coherent` (enrichis contre
+-- `bronze.sejours` dès silver) : gold les lit tels quels, et se contente de
+-- recopier `sejour_coherent` dans le fait, sans le filtrer.
 --
 -- CLOISONNEMENT : ces tables sont au grain de l'événement et portent le
 -- pseudonyme patient. Elles vivent donc dans gold_pilotage, dont l'accès est
@@ -34,7 +45,10 @@
 CREATE TABLE IF NOT EXISTS gold_pilotage.dim_patient
 (
     patient_pseudo   String,          -- clé de dimension (pseudonyme, non réversible)
-    birth_year       UInt16,
+    -- NULL si la date de naissance était illisible en source (tracé en
+    -- quarantaine dès silver). age_au_sejour et tranche_age en tirent les
+    -- conséquences : NULL et 'inconnu' respectivement, voir 31_gold_transform.sql.
+    birth_year       Nullable(UInt16),
     sexe             LowCardinality(String),
     region           LowCardinality(String),
     _run_id          String,
@@ -91,8 +105,17 @@ CREATE TABLE IF NOT EXISTS gold_pilotage.fact_sejour
     duree_jours            Nullable(Float64),   -- NULL si séjour en cours
     est_en_cours           UInt8,
     est_urgence            UInt8,
-    est_sejour_index       UInt8,   -- clos ET patient non décédé : dénominateur
-    suivi_readmission_30j  UInt8,   -- réadmis dans les 30 j : numérateur
+    est_sejour_index       UInt8,   -- AJUSTÉ : clos ET patient non décédé — dénominateur
+    suivi_readmission_30j  UInt8,   -- AJUSTÉ : réadmis dans les 30 j — numérateur
+    -- BRUT : définition de référence de l'intervenant (valeurs de référence fournies).
+    -- Numérateur = tout séjour CLOS, décès compris, suivi d'une réadmission
+    -- du même patient sous 30 j ; le dénominateur est TOUT silver.sejours
+    -- (voir kpi_readmission_service.nb_sejours). Un patient réadmis après un
+    -- décès enregistré est une incohérence de saisie — mais la référence ne
+    -- l'exclut pas, et c'est elle qui fait foi sur cette définition : le
+    -- taux publié au § 4 est le brut, l'ajusté ci-dessus reste le
+    -- complément justifié pour qui veut exclure ce cas.
+    readmission_30j_brute  UInt8,
 
     _run_id                String,
     _built_at              DateTime
@@ -115,9 +138,17 @@ CREATE TABLE IF NOT EXISTS gold_pilotage.fact_diagnostic
     code_cim10       LowCardinality(String),  -- -> dim_cim10
     service_code     LowCardinality(String),  -- -> dim_service
 
-    date_admission   Date,
+    -- Nullable : NULL si le séjour porteur a une date d'admission illisible
+    -- en source (0 cas sur ce dépôt — cf. tests.demontrer qualite). Une clé
+    -- de PARTITION ne peut, elle, jamais être Nullable : voir plus bas
+    -- comment ce NULL est traité SANS rendre la colonne elle-même non-NULL.
+    date_admission   Nullable(Date),
     type_diag        LowCardinality(String),  -- principal | associe
     est_principal    UInt8,
+    -- Recopié depuis silver.diagnostics : 1 si le séjour porteur est présent
+    -- dans silver.sejours (donc dans fact_sejour). Un diagnostic reste dans
+    -- le fait même à 0 — cf. l'en-tête de ce fichier.
+    sejour_coherent  UInt8,
 
     age_au_sejour    Nullable(Int16),
     tranche_age      LowCardinality(String),
@@ -127,8 +158,17 @@ CREATE TABLE IF NOT EXISTS gold_pilotage.fact_diagnostic
     _built_at        DateTime
 )
 ENGINE = MergeTree
-PARTITION BY toYYYYMM(date_admission)
-ORDER BY (code_cim10, date_admission, stay_id);
+-- `coalesce(date_admission, toDate('1970-01-01'))` : le résultat d'un
+-- coalesce dont le repli est NON-NULL n'est lui-même jamais NULL, donc
+-- valide comme clé de partition, quelle que soit la nullité de la colonne
+-- qu'il enveloppe. 1970-01-01 est une sentinelle choisie loin de toute date
+-- réelle du dépôt (2026) : un diagnostic sans date n'est donc jamais
+-- confondu avec un mois d'activité, et se retrouve seul dans sa partition,
+-- trivial à isoler. ORDER BY ne porte plus `date_admission` (elle peut être
+-- NULL) : la partition suffit au filtrage temporel usuel, et `(code_cim10,
+-- stay_id)` reste unique.
+PARTITION BY toYYYYMM(coalesce(date_admission, toDate('1970-01-01')))
+ORDER BY (code_cim10, stay_id);
 
 
 -- ══ FAIT 3 — RELEVÉ DE CONSTANTES ═══════════════════════════════════════
@@ -159,6 +199,12 @@ CREATE TABLE IF NOT EXISTS gold_pilotage.fact_releve
     alerte_spo2      UInt8,
     alerte_temp      UInt8,
     en_alerte        UInt8,
+    -- Recopié depuis silver.monitoring : 1 si le séjour porteur est présent
+    -- dans silver.sejours. `ts` n'est jamais NULL (contrairement à
+    -- fact_diagnostic.date_admission) : la mesure elle-même est toujours
+    -- horodatée, seul le séjour qui l'entoure peut être temporellement
+    -- incohérent — d'où l'absence de tout traitement Nullable ici.
+    sejour_coherent  UInt8,
 
     _run_id          String,
     _built_at        DateTime
@@ -183,14 +229,21 @@ ORDER BY (service_code, date_mesure, stay_id, ts);
 -- ils doubleraient le chiffre. Justification en tête de 31_gold_transform.sql,
 -- à énoncer partout où l'indicateur est diffusé.
 
+-- `nb_patients` compte sur TOUS les types de diagnostic (principal et
+-- associé), séjours incohérents compris — c'est la définition de référence
+-- de l'intervenant, et c'est ELLE qui porte le filtre k >= 5. `nb_patients_
+-- principal` reste exposée à côté : c'est l'ANCIENNE définition (motif
+-- d'hospitalisation seul), toujours pertinente pour qui veut la prévalence
+-- au sens strict, mais qui ne détermine plus la diffusion.
 CREATE TABLE IF NOT EXISTS gold_recherche.coh_prevalence
 (
-    code_cim10       String,
-    pathologie       String,
-    nb_patients      UInt32,
-    nb_sejours       UInt32,
-    _run_id          String,
-    _built_at        DateTime
+    code_cim10           String,
+    pathologie           String,
+    nb_patients          UInt32,
+    nb_patients_principal UInt32,
+    nb_sejours           UInt32,   -- tous types de diagnostic confondus
+    _run_id              String,
+    _built_at            DateTime
 )
 ENGINE = MergeTree ORDER BY (code_cim10);
 
@@ -209,9 +262,13 @@ ENGINE = MergeTree ORDER BY (code_cim10, tranche_age, sexe);
 
 -- ══ PILOTAGE — INDICATEURS AGRÉGÉS ══════════════════════════════════════
 --
--- Le § 6 du sujet décrit gold comme des « indicateurs par usage ». Ces
--- quatre tables sont exactement cela : un agrégat par indicateur du § 4,
--- prêt à être lu sans jointure ni calcul.
+-- Le § 6 du sujet décrit gold comme des « indicateurs par usage ». Ces HUIT
+-- tables sont exactement cela : `kpi_dms_service`, `kpi_urgences_jour`,
+-- `kpi_readmission_service` et `kpi_alertes_jour` pour les quatre indicateurs
+-- nommés au § 4 ; `kpi_occupation_jour`, `kpi_mortalite_service`,
+-- `kpi_casemix_service` et `kpi_origine_service` pour sa cinquième ligne
+-- ouverte (« toute autre vue d'activité pertinente », détaillée plus bas).
+-- Un agrégat par indicateur ou vue, prêt à être lu sans jointure ni calcul.
 --
 -- Elles NE REMPLACENT PAS les faits, elles s'y ajoutent. Une table figée
 -- ne répond qu'à la question qu'on a anticipée : croiser la DMS par service
@@ -236,6 +293,7 @@ CREATE TABLE IF NOT EXISTS gold_pilotage.kpi_dms_service
     service          String,
     mois             Date,                -- premier jour du mois
     dms_jours        Float64,
+    dms_heures       Float64,             -- même moyenne, en heures (référence de l'intervenant)
     -- La MOYENNE SEULE MASQUE LA QUEUE. En réanimation, moyenne 9,05 mais
     -- P90 à 18,03 : la moitié de l'écart entre un séjour ordinaire et un
     -- séjour long est invisible si l'on ne publie que la DMS. Un service
@@ -250,28 +308,49 @@ CREATE TABLE IF NOT EXISTS gold_pilotage.kpi_dms_service
 ENGINE = MergeTree ORDER BY (service_code, mois);
 
 -- Activité des urgences, par jour d'ADMISSION — jamais par jour de dépôt.
+-- `nb_passages_urgences` retient la lecture SERVICE (`service_code =
+-- 'URGENCES'`) : c'est la définition de référence de l'intervenant pour
+-- l'indicateur nommé au § 4. `nb_admissions_en_urgence` (mode d'admission,
+-- tous services) reste exposée à côté, en mesure complémentaire — voir
+-- l'ambiguïté tranchée au § 2.10 du rapport.
 CREATE TABLE IF NOT EXISTS gold_pilotage.kpi_urgences_jour
 (
-    jour             Date,
-    nb_passages      UInt32,
-    nb_sejours       UInt32,             -- toutes admissions confondues
-    _run_id          String,
-    _built_at        DateTime
+    jour                     Date,
+    nb_passages_urgences     UInt32,   -- service_code = 'URGENCES'
+    nb_encore_presents       UInt32,   -- parmi eux, sans date de sortie
+    duree_moy_heures         Float64,  -- durée moyenne des séjours CLOS parmi eux, en heures
+    nb_admissions_en_urgence UInt32,   -- admission_mode = 'urgence', tous services : mesure complémentaire
+    nb_sejours               UInt32,   -- total du jour, tous services confondus
+    _run_id                  String,
+    _built_at                DateTime
 )
 ENGINE = MergeTree ORDER BY (jour);
 
--- Réadmission à 30 jours. Numérateur et dénominateur sont exposés à côté du
--- taux : sans eux, impossible de savoir si 12 % porte sur 50 ou 5 000
--- séjours, ni de recomposer l'indicateur sur un autre périmètre.
+-- Réadmission à 30 jours. Deux définitions, l'une à côté de l'autre :
+--   · BRUTE (colonnes nb_sejours / nb_readmis_30j_brut / taux_brut_pct) —
+--     dénominateur = TOUS les séjours, numérateur = tout séjour clos (décès
+--     compris) suivi d'une réadmission sous 30 j. C'est la définition de
+--     référence de l'intervenant, celle qui fait foi au § 4.
+--   · AJUSTÉE (nb_sejours_index / nb_readmis_30j / taux_pct) — dénominateur
+--     restreint aux séjours clos et non décédés. Un patient réadmis après un
+--     décès enregistré est une incohérence de saisie, mais la référence ne
+--     l'exclut pas : cette version reste le complément justifié, pas le
+--     chiffre à publier.
+-- Numérateur et dénominateur sont exposés à côté de chaque taux : sans eux,
+-- impossible de savoir si 12 % porte sur 50 ou 5 000 séjours, ni de
+-- recomposer l'indicateur sur un autre périmètre.
 CREATE TABLE IF NOT EXISTS gold_pilotage.kpi_readmission_service
 (
-    service_code     LowCardinality(String),
-    service          String,
-    nb_sejours_index UInt32,             -- dénominateur : clos et non décédés
-    nb_readmis_30j   UInt32,             -- numérateur
-    taux_pct         Float64,
-    _run_id          String,
-    _built_at        DateTime
+    service_code        LowCardinality(String),
+    service              String,
+    nb_sejours           UInt32,      -- dénominateur brut : TOUS les séjours
+    nb_readmis_30j_brut  UInt32,      -- numérateur brut
+    taux_brut_pct        Float64,     -- taux de RÉFÉRENCE (§4)
+    nb_sejours_index     UInt32,      -- dénominateur ajusté : clos et non décédés
+    nb_readmis_30j       UInt32,      -- numérateur ajusté
+    taux_pct             Float64,     -- taux ajusté
+    _run_id              String,
+    _built_at            DateTime
 )
 ENGINE = MergeTree ORDER BY (service_code);
 
@@ -295,8 +374,8 @@ ENGINE = MergeTree ORDER BY (jour, service_code);
 -- ── « Toute autre vue d'activité pertinente » (§ 4) ──────────────────────
 --
 -- Le sujet nomme quatre indicateurs de pilotage puis laisse une cinquième
--- ligne ouverte. Trois vues la remplissent, chacune répondant à une question
--- qu'aucune des quatre premières ne couvre.
+-- ligne ouverte. Quatre vues la remplissent, chacune répondant à une
+-- question qu'aucune des quatre premières ne couvre.
 
 -- OCCUPATION — combien de patients sont présents, un jour donné, dans un
 -- service. C'est la vue que regarde une direction en premier, et la seule
@@ -359,3 +438,30 @@ CREATE TABLE IF NOT EXISTS gold_pilotage.kpi_casemix_service
     _built_at        DateTime
 )
 ENGINE = MergeTree ORDER BY (service_code, code_cim10);
+
+-- ORIGINE GÉOGRAPHIQUE — d'où viennent les patients de chaque service, en
+-- département de résidence. C'est CETTE TABLE qui justifie de conserver
+-- `region_code` jusqu'en gold : le sujet impose de « ne conserver que ce qui
+-- est utile à l'usage » (minimisation, §3), et une donnée retenue sans usage
+-- n'est pas défendable. Avant cette table, `region_code` traversait bronze,
+-- silver et `dim_patient` sans qu'aucun indicateur ne le lise — exactement
+-- le cas que la minimisation proscrit. L'attractivité territoriale du CHU
+-- est la question de pilotage que cet attribut sert, au titre de « toute
+-- autre vue d'activité pertinente » (§4).
+--
+-- GRAIN : un couple (service, département de résidence). Comme le case-mix,
+-- la part est calculée SUR LE SERVICE — la question posée est « d'où
+-- viennent les patients de CE service », pas le poids d'un département dans
+-- l'hôpital entier. Les parts d'un même service somment donc à 100.
+CREATE TABLE IF NOT EXISTS gold_pilotage.kpi_origine_service
+(
+    service_code     LowCardinality(String),
+    service          String,
+    region_code      LowCardinality(String),  -- département de résidence
+    nb_sejours       UInt32,
+    nb_patients      UInt32,
+    part_pct         Float64,   -- part des séjours du service venant de ce département
+    _run_id          String,
+    _built_at        DateTime
+)
+ENGINE = MergeTree ORDER BY (service_code, region_code);
