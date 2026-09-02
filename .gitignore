@@ -216,3 +216,27 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# ── EDS CHU — données de santé (RGPD art. 9) ──────────────────────────
+# Les fichiers sources contiennent l'identité en clair (nom, prénom, NIR).
+# Ils ne doivent jamais entrer dans l'historique git : un commit ne se retire pas.
+eds-chu-sujet/source-filestorage/
+landing/
+lake/
+# Le répertoire doit exister avant `docker compose up` : il est monté dans
+# ClickHouse. Sans lui, Docker le crée lui-même et le pipeline ne peut plus y écrire.
+!lake/.gitkeep
+
+# Captures d'écran destinées au rapport.
+# L'une d'elles montre volontairement une ligne source complète — nom, prénom
+# et NIR — pour démontrer l'effet de la pseudonymisation. Elle a sa place dans
+# le rapport, où elle prouve quelque chose ; pas dans l'historique Git, dont
+# rien ne se retire. Le dépôt reste ainsi exempt de toute donnée identifiante,
+# fichiers comme images.
+Screenshots/
+
+# Le sel de pseudonymisation : sa fuite rendrait le hachage réversible.
+.env
+*.salt
+
+.DS_Store

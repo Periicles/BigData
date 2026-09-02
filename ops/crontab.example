@@ -1,0 +1,21 @@
+# Planification du pipeline EDS — collecte et transformation quotidiennes.
+#
+# Installation :   crontab ops/crontab.example
+# Vérification :   crontab -l
+# Désinstallation: crontab -r
+#
+# Le CHU dépose ses fichiers chaque jour. Le pipeline s'exécute à 03h10,
+# après la fenêtre de dépôt et avant la prise de poste.
+#
+# Le mode par défaut (sans option) est INCRÉMENTAL : seuls les jours absents
+# de l'entrepôt sont ingérés. Une exécution sur un dépôt déjà traité ne fait
+# que reconstruire silver et gold — sans duplication.
+#
+# La sortie est redirigée vers un fichier distinct de logs/pipeline.log :
+# ce dernier reçoit le journal structuré, celui-ci les erreurs système
+# (Python absent, disque plein, conteneur arrêté).
+
+SHELL=/bin/bash
+EDS_HOME=/Users/periicles/Dev/BigData
+
+10 3 * * *  cd $EDS_HOME && .venv/bin/python -m eds.run >> logs/cron.log 2>&1
