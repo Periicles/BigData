@@ -5,9 +5,9 @@ pseudonymisation à l'ingestion, transformation en couches, jusqu'à deux bases
 **gold** cloisonnées — modèle en étoile pour le pilotage, agrégats anonymisés
 pour la recherche.
 
-**Tout s'exécute en local, en deux commandes.** Aucune étape manuelle : la
-construction de l'entrepôt et l'attribution des droits sont entièrement
-scriptées.
+**Tout s'exécute en local, en trois commandes.** Aucune étape manuelle : la
+construction de l'entrepôt, l'attribution des droits et les deux tableaux de
+bord sont entièrement scriptés — rien à cliquer, rien à régler à la main.
 
 ---
 
@@ -26,17 +26,24 @@ source-filestorage/     dépôt du CHU, lecture seule (identités en clair)
         │  └──────────►  quarantaine     chaque ligne écartée, avec son motif
         ▼
    gold_pilotage                          gold_recherche
-   7 tables d'indicateurs                 agrégats · k ≥ 5
+   8 tables d'indicateurs                 agrégats · k ≥ 5
    dms_service · urgences_jour            coh_prevalence
    readmission_service · alertes_jour     coh_description
    occupation_jour · mortalite_service
-   casemix_service
+   casemix_service · origine_service
      ╰─ dérivées du modèle en étoile
         fact_sejour · fact_diagnostic · fact_releve
         dim_patient · dim_service · dim_cim10
         │                                        │
         └──── deux bases, deux comptes, droits disjoints ────┘
              le refus est prononcé par le moteur, pas par l'applicatif
+        │                                        │
+        ▼                                        ▼
+   « Pilotage hospitalier »                « Recherche clinique »
+   tableau de bord Metabase                tableau de bord Metabase
+   connexion eds_pilotage                  connexion eds_recherche
+     chacun branché sur la connexion ClickHouse bornée de son usage —
+             Metabase hérite du refus, il ne peut pas le contourner
 ```
 
 **Où passe la frontière entre silver et gold.** Une règle, appliquée partout :
@@ -67,7 +74,7 @@ EDS_SEUIL_FC_BASSE=45 .venv/bin/python -m eds.run --tout
 |---|---|
 | Docker Desktop | démarré (`docker info` doit répondre) |
 | Python | 3.11 ou plus |
-| Ports libres | `8123` ClickHouse |
+| Ports libres | `8123` ClickHouse, `3000` Metabase |
 | Données source | `eds-chu-sujet/source-filestorage/` — voir ci-dessous |
 
 > **Les données ne sont pas dans ce dépôt, volontairement.** Les fichiers
@@ -82,7 +89,7 @@ EDS_SEUIL_FC_BASSE=45 .venv/bin/python -m eds.run --tout
 ## Démarrage
 
 ```bash
-# 1. Secrets — génère le sel de 256 bits et les quatre mots de passe
+# 1. Secrets — génère le sel de 256 bits et tous les mots de passe
 python3 - <<'EOF'
 import secrets, pathlib
 mdp = lambda n=24: secrets.token_urlsafe(n)
@@ -95,6 +102,14 @@ CH_EXPLOITATION_PASSWORD={mdp()}
 
 # ── Pseudonymisation ──
 EDS_PSEUDO_SALT={secrets.token_hex(32)}
+
+# ── Metabase (restitution, § 1 du sujet) ──
+MB_ADMIN_EMAIL=admin@eds-chu.local
+MB_ADMIN_PASSWORD={mdp()}
+MB_PILOTAGE_EMAIL=pilotage@eds-chu.local
+MB_PILOTAGE_PASSWORD={mdp()}
+MB_RECHERCHE_EMAIL=recherche@eds-chu.local
+MB_RECHERCHE_PASSWORD={mdp()}
 """)
 EOF
 
@@ -110,17 +125,43 @@ docker compose up -d
 
 Comptez **environ 1,5 seconde** pour l'intégralité du pipeline.
 
-> **La couche de restitution est retirée en attendant l'arbitrage de
-> l'intervenant.** Le pipeline s'arrête donc à `gold`, qui est l'objet du
-> dossier : deux bases, un modèle en étoile, des agrégats anonymisés, et un
-> cloisonnement prononcé par le moteur. Les tableaux de bord se rebranchent sur
-> ces mêmes tables sans rien changer en amont.
+```bash
+# 5. Restitution (Partie 1 du sujet) — provisionne Metabase par son API
+.venv/bin/python -m eds.restitution
+```
+
+`gold` est l'objet du dossier : deux bases, un modèle en étoile, des agrégats
+anonymisés, un cloisonnement prononcé par le moteur. `eds.restitution` s'y
+rebranche sans rien changer en amont — deux connexions ClickHouse bornées,
+deux groupes, deux comptes applicatifs, un graphe de permissions et les deux
+tableaux de bord, tous posés par l'API Metabase, jamais à la souris (voir
+`eds/restitution.py`).
+
+> **L'instance ne contient que le projet.** Metabase livre d'office une base
+> de démonstration et un tableau de bord « E-commerce Insights » : la
+> variable `MB_LOAD_SAMPLE_CONTENT` les empêche d'être chargés, et
+> `eds.restitution` retire ceux qu'une instance plus ancienne aurait déjà
+> créés. Le tri se fait sur le drapeau `is_sample` posé par Metabase, jamais
+> sur un libellé : aucun objet du projet ne peut être atteint par cette
+> purge.
+
+**Metabase (une JVM) met environ une minute à répondre au tout premier
+démarrage** — `docker compose ps` doit afficher `healthy` (ou
+`curl -s http://localhost:3000/api/health` répondre `{"status":"ok"}`) avant
+de lancer le provisioning ; `eds.restitution` attend lui-même cette santé
+avant d'agir, mais patienter évite un premier passage plus long. Le
+provisioning lui-même, une fois Metabase démarré, **prend environ 6 secondes
+au premier passage** — il crée tout : connexions, synchronisation des schémas,
+comptes, droits, 22 questions et la mise en page des deux tableaux de bord.
+Les exécutions suivantes, qui ne font que réconcilier l'existant, **prennent
+environ 1,2 seconde**.
 
 ### Accès
 
 | | |
 |---|---|
 | Console SQL | http://localhost:8123/play — utilisateur `eds_admin` |
+| Metabase | http://localhost:3000 — trois comptes : `admin@eds-chu.local`, `pilotage@eds-chu.local`, `recherche@eds-chu.local` (variables `MB_*` de `.env`) |
 
 **Quatre comptes ClickHouse, un par usage.** Le sujet définit deux publics
 métier — « pilotage et recherche ne voient pas les mêmes données → droits
@@ -132,12 +173,32 @@ compte, et aucun n'a plus de droits que son besoin.
 | Compte ClickHouse | Usage | Droits |
 |---|---|---|
 | `eds_admin` | le pipeline | tous — il crée les tables et applique les habilitations |
-| `eds_pilotage` | **Direction hospitalière** — piloter l'activité et la qualité des soins | `SELECT` sur les **7 tables d'indicateurs**, plus **16 colonnes** des faits — ni `patient_pseudo`, ni `stay_id` |
+| `eds_pilotage` | **Direction hospitalière** — piloter l'activité et la qualité des soins | `SELECT` sur les **8 tables d'indicateurs**, plus **17 colonnes** des faits — ni `patient_pseudo`, ni `stay_id` |
 | `eds_recherche` | **Recherche clinique** — décrire des cohortes | `SELECT` sur les colonnes des deux tables de cohortes |
 | `eds_exploitation` | **Investigation technique** — incident, piste d'audit, effacement | `SELECT` sur `bronze`, `silver`, `quarantaine`, `ops` — **lecture seule** |
 
 Mots de passe dans `.env` — `CH_*_PASSWORD`. Aucun n'est écrit en dur dans le
 code.
+
+**Ce sont ces deux comptes, `eds_pilotage` et `eds_recherche`, que Metabase
+emploie.** Chacune des deux connexions posées par `eds.restitution` s'authentifie
+directement avec le compte ClickHouse borné de son usage — jamais avec
+`eds_admin` — c'est ce qui fait tenir le cloisonnement jusque dans
+l'interface (détails dans `docs/RAPPORT.md`, § 2.11).
+
+**Les trois comptes Metabase sont provisionnés par `eds.restitution`, pas à la
+main.** Chaque compte applicatif (`pilotage@eds-chu.local`,
+`recherche@eds-chu.local`) n'appartient qu'à son groupe et n'ouvre que son
+tableau de bord — l'administrateur seul voit les deux. Mots de passe dans
+`.env` — `MB_*_PASSWORD`.
+
+> **Limite résiduelle de l'édition gratuite.** `GET /api/database` reste
+> visible pour un compte métier avec le NOM et l'id de la connexion de
+> l'autre usage (masquer un nom de base — `"view-data": "blocked"` — exige un
+> jeton premium). Le contenu, lui, est bien bloqué à tous les niveaux
+> vérifiés : aucune table de la base étrangère n'est synchronisée pour ce
+> compte, toute requête dessus est refusée par Metabase lui-même, et son
+> tableau de bord répond HTTP 403. Voir `tests.demontrer restitution`.
 
 > **Les droits sont posés colonne par colonne, pas base par base.** Un `GRANT`
 > sur `gold_pilotage` entier donnerait accès à `patient_pseudo` et au grain du
@@ -185,19 +246,21 @@ crontab ops/crontab.example     # exécution quotidienne à 03h10
 
 ## Vérifier
 
-Huit contrôles, exécutables à tout moment. Ils constituent la démonstration
+Dix contrôles, exécutables à tout moment. Ils constituent la démonstration
 des propriétés annoncées.
 
 ```bash
-.venv/bin/python -m tests.verifier      # les quatre contrôles d'un coup
-.venv/bin/python -m tests.demontrer     # les quatre démonstrations
+.venv/bin/python -m tests.verifier      # les cinq contrôles d'un coup
+.venv/bin/python -m tests.demontrer     # les cinq démonstrations
 
 # ou une section à la fois
 .venv/bin/python -m tests.verifier pseudonymisation   # aucune identité dans le lake
 .venv/bin/python -m tests.verifier qualite            # bronze = silver + quarantaine
 .venv/bin/python -m tests.verifier indicateurs        # les indicateurs du §4
 .venv/bin/python -m tests.verifier rgpd               # les 5 contraintes du sujet
-.venv/bin/python -m tests.demontrer cloisonnement     # droits d'accès disjoints
+.venv/bin/python -m tests.verifier conformite         # confrontation aux valeurs de l'intervenant
+.venv/bin/python -m tests.demontrer cloisonnement     # droits d'accès disjoints (le moteur)
+.venv/bin/python -m tests.demontrer restitution       # le même cloisonnement, vu de l'interface
 .venv/bin/python -m tests.demontrer reprise           # erreurs et reprise sur incident
 .venv/bin/python -m tests.demontrer qualite           # les contrôles face à des lignes fautives
 .venv/bin/python -m tests.demontrer effectifs         # le seuil des 5 patients, de part et d'autre
@@ -206,13 +269,20 @@ des propriétés annoncées.
 | Contrôle | Ce qu'il prouve |
 |---|---|
 | `verifier pseudonymisation` | Les 17 384 valeurs identifiantes de la source sont introuvables dans le lake ; aucune collision de pseudonyme ; les jointures survivent |
-| `verifier qualite` | Équation de conservation par source, déduplication, règles métier du §3, intégrité référentielle de silver **et** du modèle en étoile — 32 contrôles |
-| `verifier indicateurs` | Les indicateurs du §4, calculés depuis gold : leur **valeur restituée** et la propriété qui la fonde — dénominateur de la DMS, inclusion numérateur/dénominateur de la réadmission, seuils d'alerte effectivement issus de la configuration, coïncidence de chaque table agrégée avec le fait dont elle sort — 39 contrôles |
+| `verifier qualite` | Équation de conservation par source, déduplication, règles métier du §3, intégrité référentielle de silver **et** du modèle en étoile — 53 contrôles |
+| `verifier indicateurs` | Les indicateurs du §4, calculés depuis gold : leur **valeur restituée** et la propriété qui la fonde — dénominateur de la DMS, inclusion numérateur/dénominateur de la réadmission (brute et ajustée), seuils d'alerte effectivement issus de la configuration, coïncidence de chaque table agrégée avec le fait dont elle sort — 50 contrôles |
 | `verifier rgpd` | Les cinq contraintes RGPD, vérifiées sur l'entrepôt réel : pseudonymisation, minimisation, cloisonnement, petits effectifs, traçabilité — plus l'absence de donnée personnelle dans les journaux |
+| `verifier conformite` | Confrontation directe de l'entrepôt aux valeurs de référence fournies par l'intervenant — silver et les six indicateurs — comptages exacts, moyennes à ±0,1. Fichier de référence **local, non versionné** : la section s'ignore, plutôt que d'échouer, s'il est absent |
 | `demontrer cloisonnement` | Chaque compte accède à sa base et se voit refuser les trois autres, par le moteur |
+| `demontrer restitution` | Le même cloisonnement, prouvé cette fois contre l'API Metabase : chaque compte métier ne voit le contenu que de sa base et n'ouvre que son tableau de bord (HTTP 403 sur l'autre) ; puis, avec un compte **administrateur**, une requête native est forcée sur la mauvaise base à travers chacune des deux connexions — refusée par ClickHouse lui-même (« Not enough privileges »), jamais par un réglage Metabase contournable ; enfin, aucune des deux connexions n'atteint bronze, silver ni quarantaine |
 | `demontrer reprise` | Erreurs détectées, tracées, entrepôt cohérent, reprise par simple relance |
-| `demontrer qualite` | Des lignes fautives sont injectées en bronze : dates illisibles écartées, sexe hors nomenclature corrigé, casse redressée sans bruit, équation de conservation intacte — puis l'entrepôt est remis en état |
+| `demontrer qualite` | Des lignes fautives sont injectées en bronze : dates illisibles écartées, sexe hors nomenclature corrigé, casse redressée sans bruit, séjour incohérent conservé avec ses diagnostics et relevés (`sejour_coherent = 0`), `stay_id` inconnu écarté (motif `sejour_inconnu`), équation de conservation intacte — puis l'entrepôt est remis en état |
 | `demontrer effectifs` | Deux cohortes sont fabriquées de part et d'autre du seuil RGPD : celle de 4 patients existe au grain du fait mais n'atteint pas la base recherche, celle de 5 passe — le filtre coupe **sous** 5, pas à 5 |
+
+> **`demontrer restitution` a besoin de Metabase, démarré et provisionné**
+> (`docker compose up -d metabase` puis `python -m eds.restitution`). S'il est
+> éteint ou pas encore provisionné, la section l'annonce clairement — jamais
+> une trace Python — et échoue : la propriété n'a alors pas pu être vérifiée.
 
 > **Pourquoi fabriquer des cas qui n'existent pas.** Les données fournies sont
 > propres sur deux des garanties annoncées : dates valides et sexe normalisé
@@ -252,12 +322,16 @@ un incident, on corrige la cause et on relance — l'exécution est idempotente.
 | `argument invalide` | Jour mal formé en ligne de commande | Utiliser le format `AAAA-MM-JJ` |
 | `aucun fichier trouvé pour le …` | Jour absent du dépôt du CHU | Vérifier `eds-chu-sujet/source-filestorage/` |
 | `Unknown expression identifier` sur une colonne | Un DDL a été modifié : `CREATE TABLE IF NOT EXISTS` **ne migre pas** un schéma existant | Supprimer la table concernée (`DROP TABLE …`) puis relancer le pipeline |
+| `Metabase ne répond pas sur /api/health après …s` | Le conteneur `metabase` n'est pas démarré, ou encore en cours de démarrage (JVM, ~1 minute la première fois) | `docker compose up -d metabase`, puis `docker compose logs metabase` pour la cause si l'attente échoue malgré tout |
+| `connexions Metabase absentes` / `tableaux de bord Metabase absents` (dans `demontrer restitution`) | `eds.restitution` n'a jamais été joué contre cette instance | `.venv/bin/python -m eds.restitution` |
+| `Ports are not available` / `bind: address already in use` sur `docker compose up -d metabase` | Le port `3000` est déjà occupé par un autre processus | Libérer le port (`lsof -i :3000`), ou republier Metabase sur un autre port dans `docker-compose.yml` |
 
 **Repartir de zéro** (destructif, l'entrepôt est reconstruit intégralement) :
 
 ```bash
 docker compose down -v && docker compose up -d
 .venv/bin/python -m eds.run --tout
+.venv/bin/python -m eds.restitution   # -v supprime aussi metabase-data : Metabase repart de zéro
 ```
 
 ---
@@ -294,7 +368,7 @@ Les cinq contraintes du sujet sont vérifiables en une commande
 ## Organisation du dépôt
 
 ```
-docker-compose.yml       ClickHouse 25.8, version épinglée
+docker-compose.yml       ClickHouse 25.8 et Metabase, versions épinglées
 requirements.txt         2 dépendances Python
 
 eds/                     le pipeline
@@ -303,6 +377,7 @@ eds/                     le pipeline
   warehouse.py           client ClickHouse, exécution SQL, chargement bronze
   journal.py             journalisation JSON + console
   run.py                 orchestrateur — point d'entrée
+  restitution.py         provisionne Metabase par son API — Partie 1 du sujet
 
 sql/                     toute la transformation, versionnée
   00_databases.sql       les six bases
@@ -316,7 +391,7 @@ sql/                     toute la transformation, versionnée
   60_ops.sql             journal d'exécution
   99_verifications.sql   requêtes d'inspection pour la console SQL
 
-tests/                   les huit contrôles et démonstrations
+tests/                   les dix contrôles et démonstrations
 exploration/             profilage initial des sources (DuckDB)
 ops/crontab.example      planification
 docs/                    rapport et documentation
@@ -335,6 +410,11 @@ Détaillés et justifiés dans [`docs/RAPPORT.md`](docs/RAPPORT.md).
 - **Le cloisonnement est physique** — deux bases, deux comptes, droits disjoints,
   posés colonne par colonne. Le refus est prononcé par le moteur : aucun outil
   placé au-dessus de l'entrepôt ne peut le contourner.
-- **Les indicateurs sont des tables, pas des vues.** En ClickHouse une vue
-  s'exécute avec les droits de l'appelant : une vue gold obligerait à ouvrir
-  l'accès à silver et ferait tomber le cloisonnement.
+- **Les indicateurs sont des tables, pas des vues.** Une table est un
+  instantané : stable entre deux exécutions, comparable au fait dont elle sort
+  (`tests.verifier indicateurs` le fait à chaque passage) et indépendante des
+  droits de celui qui la lit. Une vue ordinaire s'exécute avec les droits de
+  l'appelant et obligerait à ouvrir silver ; ClickHouse sait depuis la 24.4
+  déclarer une vue `SQL SECURITY DEFINER`, mais on aurait alors un indicateur
+  recalculé à chaque lecture, sans instantané à vérifier — c'est l'alternative
+  écartée.
