@@ -1,4 +1,4 @@
-# Socle EDS CHU — entrepôt + restitution.
+# Socle EDS CHU — l'entrepôt.
 # Tout démarre par : docker compose up -d
 services:
 
@@ -32,23 +32,5 @@ services:
       start_period: 10s
     restart: unless-stopped
 
-  metabase:
-    image: metabase/metabase:v0.56.13
-    container_name: eds-metabase
-    ports:
-      - "3000:3000"
-    volumes:
-      # Persiste la base applicative de Metabase : les dashboards survivent
-      # à un redémarrage des conteneurs.
-      - metabase-data:/metabase-data
-    environment:
-      MB_DB_FILE: /metabase-data/metabase.db
-      JAVA_TIMEZONE: Europe/Paris
-    depends_on:
-      clickhouse:
-        condition: service_healthy
-    restart: unless-stopped
-
 volumes:
   clickhouse-data:
-  metabase-data:

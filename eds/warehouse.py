@@ -47,16 +47,21 @@ def client() -> Client:
     )
 
 
+# Un identifiant (run_id, mot de passe généré) ou un nombre décimal (seuil).
+_SUBSTITUTION_ADMISE = re.compile(r"[A-Za-z0-9_-]+|-?\d+\.\d+")
+
+
 def executer_fichier(ch: Client, nom: str, **substitutions: str) -> int:
     """Exécute un fichier .sql du répertoire `sql/`, instruction par instruction.
 
     Les marqueurs `{cle}` du fichier sont remplacés par les substitutions
-    fournies. Chaque valeur est validée : seuls les caractères alphanumériques
-    et le tiret sont admis, ce qui exclut toute injection par ce canal.
+    fournies. Chaque valeur est validée : un identifiant alphanumérique, ou un
+    nombre décimal (les seuils d'alerte). Ni quote, ni espace, ni parenthèse,
+    ni point-virgule ne passent : aucune injection n'est possible par ce canal.
     """
     contenu = chemin_sql(nom).read_text(encoding="utf-8")
     for cle, valeur in substitutions.items():
-        if not re.fullmatch(r"[A-Za-z0-9_-]+", valeur):
+        if not _SUBSTITUTION_ADMISE.fullmatch(valeur):
             raise ValueError(f"Substitution SQL refusée : {cle}={valeur!r}")
         contenu = contenu.replace("{" + cle + "}", valeur)
 
@@ -119,13 +124,20 @@ def _sql_patients(jour: str, run_id: str) -> str:
 
 
 def _sql_sejours(jour: str, run_id: str) -> str:
-    # discharge_ts est lu en String puis converti : la chaîne vide signifie
-    # « séjour en cours » et doit devenir NULL, pas une date par défaut.
+    # Les deux dates sont lues en String puis converties en mode TOLÉRANT
+    # (`...OrNull`) : une date illisible produit un NULL et sera écartée par
+    # silver, au lieu de faire échouer le chargement du jour entier.
+    #
+    # Sur discharge_ts, le NULL est ambigu — chaîne vide (séjour en cours,
+    # légitime) ou date illisible (anomalie). Le drapeau les sépare, sinon une
+    # date corrompue passerait silencieusement pour un séjour en cours.
     return f"""
     INSERT INTO bronze.sejours
     SELECT stay_id, patient_pseudo, service_code,
-           parseDateTimeBestEffort(admission_ts),
+           parseDateTimeBestEffortOrNull(admission_ts),
            parseDateTimeBestEffortOrNull(nullIf(discharge_ts, '')),
+           discharge_ts != ''
+               AND parseDateTimeBestEffortOrNull(discharge_ts) IS NULL,
            admission_mode, discharge_mode,
            toDate('{jour}'), replaceOne(_path, '/var/lib/clickhouse/user_files/', ''), now(), '{run_id}'
     FROM file('{LAKE_CH}/sejours/{jour}/sejours.csv', CSVWithNames,

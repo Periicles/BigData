@@ -27,16 +27,23 @@ ENGINE = MergeTree
 PARTITION BY _jour_depot
 ORDER BY (patient_pseudo);
 
+-- Même principe que pour le monitoring : les dates sont lues en mode
+-- TOLÉRANT. Une date illisible doit pouvoir entrer pour être comptée et
+-- tracée ; un parseur strict ferait échouer le chargement du jour ENTIER, et
+-- l'on perdrait à la fois la donnée et la mesure de la qualité.
 CREATE TABLE IF NOT EXISTS bronze.sejours
 (
     stay_id         String,
     patient_pseudo  String,
     service_code    LowCardinality(String),
-    admission_ts    DateTime,
-    -- NULL = séjour en cours. C'est légitime, pas une anomalie.
+    -- NULL = date illisible dans la source. Silver l'écartera, en la traçant.
+    admission_ts    Nullable(DateTime),
+    -- NULL = séjour en cours (légitime, pas une anomalie) OU date illisible.
+    -- Le drapeau ci-dessous sépare les deux cas, que le NULL confond.
     discharge_ts    Nullable(DateTime),
+    _discharge_illisible UInt8,
     admission_mode  LowCardinality(String),
-    -- Peut être vide : 1 992 séjours clos n'ont pas de mode de sortie.
+    -- Peut être vide : un séjour en cours n'a pas encore de mode de sortie.
     -- La normalisation en 'inconnu' a lieu en silver, pas ici.
     discharge_mode  LowCardinality(String),
 

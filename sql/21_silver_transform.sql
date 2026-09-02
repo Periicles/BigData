@@ -3,52 +3,135 @@
 -- Recalcul intégral : chaque table est vidée puis reconstruite.
 -- Le marqueur {run_id} est substitué par le pipeline.
 --
--- SEUILS D'ALERTE (§4 « relevés en alerte »). Le sujet ne les fournit pas :
--- ceux retenus sont conventionnels et signalés comme à valider par le corps
--- médical dans les limites du rapport.
---     fréquence cardiaque : < 40 ou > 120 bpm
---     saturation SpO2     : < 92 %
---     température         : > 38,5 °C
+-- CE QUE FAIT CETTE COUCHE, ET RIEN D'AUTRE : appliquer les règles de
+-- VALIDITÉ que le sujet fournit, tracer chaque exclusion, enrichir depuis
+-- les référentiels. Les règles métier paramétrables — seuils d'alerte, âge
+-- à l'événement — sont en gold : voir l'en-tête de 20_silver.sql.
 --
--- PLAGES DE PLAUSIBILITÉ (§3, fournies par le sujet) — au-delà, le relevé
--- n'est pas une alerte mais une donnée invalide :
+-- PLAGES DE PLAUSIBILITÉ (§3, fournies par le sujet). Un relevé qui en sort
+-- n'est pas une alerte, c'est une donnée invalide :
 --     FC 20–250 bpm · SpO2 50–100 % · température 30–45 °C
+--
+-- CONTRÔLES DU §3 DU SUJET, un par un :
+--   patients    doublons -> déduplication (snapshot cumulatif)
+--   patients    sexe normalisé M/F -> sinon 'inconnu', ligne CORRIGÉE
+--   sejours     discharge_ts < admission_ts -> ÉCARTÉE
+--   sejours     discharge_ts vide = séjour en cours -> conservé
+--   sejours     dates valides -> une date illisible ÉCARTE la ligne
+--   monitoring  plages physiologiques -> ÉCARTÉE
+--
+-- Toute ligne fautive part en `quarantaine.rejets` avec son motif et son
+-- issue, de sorte que  bronze = silver + quarantaine('ecarte')  à la ligne
+-- près, les corrections étant tracées sans être soustraites.
 -- ═══════════════════════════════════════════════════════════════════════
-TRUNCATE TABLE silver.rejets;
+TRUNCATE TABLE quarantaine.rejets;
 
 -- ── 1. PATIENTS ─────────────────────────────────────────────────────────
 -- `patients` est un SNAPSHOT CUMULATIF : chaque fichier journalier contient
--- toute la population connue à date (16 200 lignes pour 6 000 patients).
+-- toute la population connue à date (18 000 lignes pour 6 000 patients).
 -- On retient la version du jour de dépôt le plus récent.
 TRUNCATE TABLE silver.patients;
+
+-- Règle du sujet : « sexe normalisé (M/F) ». La casse et les espaces sont
+-- redressés ; toute autre valeur devient 'inconnu'.
+--
+-- Décision documentée : on CORRIGE, on n'écarte pas. Écarter le patient
+-- orphelinerait tous ses séjours pour un attribut purement descriptif, qui
+-- n'entre dans aucune clé. La ligne est donc conservée et signalée.
+INSERT INTO
+    quarantaine.rejets
+SELECT
+    'patients',
+    patient_pseudo,
+    'sexe_non_normalise',
+    'corrige',
+    concat('sexe source [', sex_source, '] -> inconnu'),
+    _jour_depot_retenu,
+    _fichier_source_retenu,
+    '{run_id}',
+    now()
+FROM
+    (
+        SELECT
+            patient_pseudo,
+            argMax(sex, _jour_depot) AS sex_source,
+            max(_jour_depot) AS _jour_depot_retenu,
+            argMax(_fichier_source, _jour_depot) AS _fichier_source_retenu
+        FROM
+            bronze.patients
+        GROUP BY
+            patient_pseudo
+    )
+WHERE
+    upper(trim(sex_source)) NOT IN ('M', 'F');
 
 INSERT INTO
     silver.patients
 SELECT
     patient_pseudo,
-    argMax(birth_year, _jour_depot),
-    argMax(sex, _jour_depot),
-    argMax(region_code, _jour_depot),
-    max(_jour_depot),
-    argMax(_fichier_source, _jour_depot),
+    birth_year,
+    if(sex IN ('M', 'F'), sex, 'inconnu'),
+    region_code,
+    _jour_depot_retenu,
+    _fichier_source_retenu,
     '{run_id}',
     now()
 FROM
-    bronze.patients
-GROUP BY
-    patient_pseudo;
+    (
+        SELECT
+            patient_pseudo,
+            argMax(birth_year, _jour_depot) AS birth_year,
+            upper(trim(argMax(sex, _jour_depot))) AS sex,
+            argMax(region_code, _jour_depot) AS region_code,
+            max(_jour_depot) AS _jour_depot_retenu,
+            argMax(_fichier_source, _jour_depot) AS _fichier_source_retenu
+        FROM
+            bronze.patients
+        GROUP BY
+            patient_pseudo
+    );
 
 -- ── 2. SÉJOURS ──────────────────────────────────────────────────────────
 -- Règle du sujet : écarter si discharge_ts < admission_ts.
 -- Règle du sujet : discharge_ts vide = séjour EN COURS, légitime, conservé.
--- Décision documentée : discharge_mode vide sur séjour clos (1 992 lignes)
---   est normalisé en 'inconnu' plutôt qu'écarté — la durée reste calculable.
+-- Règle du sujet : « dates valides ».
+-- Décision documentée : discharge_mode vide est normalisé en 'inconnu' plutôt
+--   qu'écarté — la durée reste calculable. Sur ce dépôt, seuls les 683 séjours
+--   EN COURS sont concernés ; aucun séjour clos n'est privé de mode de sortie.
+--
+-- L'ordre compte : une date illisible est écartée D'ABORD, sinon la
+-- comparaison temporelle porterait sur un NULL et la ligne échapperait aux
+-- deux contrôles. Les deux motifs sont donc mutuellement exclusifs, et
+-- l'équation de conservation ne double-compte aucune ligne.
 INSERT INTO
-    silver.rejets
+    quarantaine.rejets
+SELECT
+    'sejours',
+    stay_id,
+    'date_illisible',
+    'ecarte',
+    if(
+        admission_ts IS NULL,
+        'date d''admission illisible dans la source',
+        'date de sortie non vide et illisible dans la source'
+    ),
+    _jour_depot,
+    _fichier_source,
+    '{run_id}',
+    now()
+FROM
+    bronze.sejours
+WHERE
+    admission_ts IS NULL
+    OR _discharge_illisible = 1;
+
+INSERT INTO
+    quarantaine.rejets
 SELECT
     'sejours',
     stay_id,
     'incoherence_temporelle',
+    'ecarte',
     concat(
         'admission=',
         toString(admission_ts),
@@ -62,7 +145,9 @@ SELECT
 FROM
     bronze.sejours
 WHERE
-    discharge_ts IS NOT NULL
+    admission_ts IS NOT NULL
+    AND _discharge_illisible = 0
+    AND discharge_ts IS NOT NULL
     AND discharge_ts < admission_ts;
 
 TRUNCATE TABLE silver.sejours;
@@ -74,7 +159,7 @@ SELECT
     s.patient_pseudo,
     s.service_code,
     coalesce(r.service_label, 'inconnu'),
-    s.admission_ts,
+    assumeNotNull(s.admission_ts),
     s.discharge_ts,
     s.admission_mode,
     if(
@@ -88,13 +173,6 @@ SELECT
         dateDiff('minute', s.admission_ts, s.discharge_ts) / 1440.0
     ),
     s.discharge_ts IS NULL,
-    -- Approximé à l'année : conséquence directe de la généralisation RGPD
-    -- de la date de naissance. Erreur maximale 1 an, documentée.
-    if(
-        p.patient_pseudo = '',
-        NULL,
-        toYear(s.admission_ts) - p.birth_year
-    ),
     s._jour_depot,
     s._fichier_source,
     '{run_id}',
@@ -102,10 +180,13 @@ SELECT
 FROM
     bronze.sejours AS s
     LEFT JOIN bronze.ref_services AS r ON s.service_code = r.service_code
-    LEFT JOIN silver.patients AS p ON s.patient_pseudo = p.patient_pseudo
 WHERE
-    s.discharge_ts IS NULL
-    OR s.discharge_ts >= s.admission_ts;
+    s.admission_ts IS NOT NULL
+    AND s._discharge_illisible = 0
+    AND (
+        s.discharge_ts IS NULL
+        OR s.discharge_ts >= s.admission_ts
+    );
 
 -- ── 3. DIAGNOSTICS ──────────────────────────────────────────────────────
 -- Aucune anomalie propre : intégrité référentielle intégralement vérifiée
@@ -113,11 +194,12 @@ WHERE
 -- Seuls les diagnostics rattachés à un séjour écarté sont retirés, pour ne
 -- pas laisser d'orphelins en silver.
 INSERT INTO
-    silver.rejets
+    quarantaine.rejets
 SELECT
     'diagnostics',
     concat(stay_id, '/', code_cim10),
     'sejour_ecarte',
+    'ecarte',
     'diagnostic rattaché à un séjour exclu pour incohérence temporelle',
     _jour_depot,
     _fichier_source,
@@ -160,18 +242,19 @@ WHERE
 -- ── 4. MONITORING ───────────────────────────────────────────────────────
 -- Règle du sujet : écarter hors plage physiologique.
 --
--- CONSTAT : FC et SpO2 sont TOUJOURS aberrantes ensemble (1 369 fois les
+-- CONSTAT : FC et SpO2 sont TOUJOURS aberrantes ensemble (858 fois les
 -- deux, 0 fois l'une seule), sur 4 combinaisons de butée — (0|500) × (0|120).
 -- Ce n'est pas du bruit de mesure mais un CAPTEUR DÉCONNECTÉ. Le relevé
 -- entier est écarté : un capteur en panne ne garantit la fiabilité d'aucune
 -- de ses mesures, et ne conserver que la température créerait des relevés
 -- partiels au grain incohérent.
 INSERT INTO
-    silver.rejets
+    quarantaine.rejets
 SELECT
     'monitoring',
     concat(stay_id, '@', toString(ts)),
     'capteur_hors_plage',
+    'ecarte',
     concat(
         'fc=',
         toString(heart_rate),
@@ -198,11 +281,12 @@ WHERE
 -- MÊME cause que l'incohérence temporelle : sur un séjour dont la sortie
 -- précède l'admission, tout relevé est « après la sortie » par construction.
 INSERT INTO
-    silver.rejets
+    quarantaine.rejets
 SELECT
     'monitoring',
     concat(stay_id, '@', toString(ts)),
     'sejour_ecarte',
+    'ecarte',
     'relevé rattaché à un séjour exclu pour incohérence temporelle',
     _jour_depot,
     _fichier_source,
@@ -234,17 +318,6 @@ SELECT
     m.heart_rate,
     m.spo2,
     m.temp_c,
-    (
-        m.heart_rate < 40
-        OR m.heart_rate > 120
-    ) AS alerte_fc,
-    (m.spo2 < 92) AS alerte_spo2,
-    (m.temp_c > 38.5) AS alerte_temp,
-    (
-        alerte_fc
-        OR alerte_spo2
-        OR alerte_temp
-    ) AS en_alerte,
     m._jour_depot,
     m._fichier_source,
     '{run_id}',

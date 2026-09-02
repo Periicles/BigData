@@ -3,7 +3,7 @@
 --
 -- Trois tables de faits, à TROIS GRAINS DIFFÉRENTS, partageant des
 -- dimensions conformes. C'est ce qui permet à un analyste de croiser
--- librement dans Metabase sans qu'on ait pré-calculé chaque combinaison.
+-- librement les axes sans qu'on ait pré-calculé chaque combinaison.
 --
 --            dim_patient        dim_service        dim_cim10
 --                 │                  │                  │
@@ -16,6 +16,13 @@
 -- séjour porte 1 à 4 diagnostics et 0 à n relevés ; les fusionner
 -- multiplierait les lignes et fausserait toute somme (le piège classique du
 -- « fan trap »).
+--
+-- COMMENT SE CONSTRUIT UN FAIT : les dimensions d'abord, les faits ensuite.
+-- Tout attribut de dimension dont un fait a besoin est lu DANS la dimension,
+-- jamais re-dérivé depuis silver. C'est le cas de `age_au_sejour`, qui n'est
+-- ni un attribut de la personne (il change à chaque séjour) ni une donnée de
+-- la source : il croise `dim_patient.birth_year` et l'axe `date_admission`
+-- du fait, et se calcule donc ici, contre la dimension.
 --
 -- CLOISONNEMENT : ces tables sont au grain de l'événement et portent le
 -- pseudonyme patient. Elles vivent donc dans gold_pilotage, dont l'accès est
@@ -58,9 +65,9 @@ ENGINE = MergeTree ORDER BY (code_cim10);
 -- Grain : UN SÉJOUR. Une ligne par passage à l'hôpital.
 --
 -- Les indicateurs de qualité des soins sont pré-calculés ici, au grain du
--- fait, plutôt que laissés à la charge de l'outil de restitution : le calcul
--- de réadmission est une auto-jointure, impraticable dans Metabase. Le
--- porter dans le fait rend le KPI aussi simple qu'une moyenne.
+-- fait, plutôt que laissés à la charge du consommateur : le calcul de
+-- réadmission est une auto-jointure, hors de portée d'une requête d'analyse
+-- ordinaire. Le porter dans le fait rend le KPI aussi simple qu'une moyenne.
 CREATE TABLE IF NOT EXISTS gold_pilotage.fact_sejour
 (
     -- Clés
@@ -96,7 +103,7 @@ ORDER BY (service_code, date_admission, stay_id);
 
 
 -- ══ FAIT 2 — DIAGNOSTIC ═════════════════════════════════════════════════
--- Grain : UN CODE POSÉ LORS D'UN SÉJOUR. 1 à 4 lignes par séjour.
+-- Grain : UN CODE POSÉ LORS D'UN SÉJOUR. 1 à 3 lignes par séjour.
 --
 -- `patient_pseudo` y est dénormalisé depuis le séjour : les questions de
 -- recherche portent sur des cohortes de PATIENTS par pathologie, et cette
@@ -129,6 +136,12 @@ ORDER BY (code_cim10, date_admission, stay_id);
 --
 -- Partitionné sur la date de la MESURE, jamais sur le jour de dépôt : les
 -- fichiers de monitoring débordent de leur jour de dépôt.
+--
+-- Les quatre drapeaux d'alerte sont posés ICI et non en silver : il n'existe
+-- aucun seuil d'alerte réglementaire. Les moniteurs sortent d'usine avec des
+-- valeurs par défaut que chaque service, voire chaque patient, ajuste. C'est
+-- donc une règle métier paramétrable — ses seuils viennent de la
+-- configuration (cf. eds/config.py), pas du code.
 CREATE TABLE IF NOT EXISTS gold_pilotage.fact_releve
 (
     stay_id          String,
@@ -164,6 +177,11 @@ ORDER BY (service_code, date_mesure, stay_id, ts);
 --   1. HAVING count(DISTINCT patient) >= 5
 --   2. âge en tranches de 10 ans, jamais l'année
 --   3. aucun pseudonyme patient
+--
+-- GRAIN DE LA COHORTE : le DIAGNOSTIC PRINCIPAL, soit le motif
+-- d'hospitalisation. Les diagnostics associés (comorbidités) sont exclus —
+-- ils doubleraient le chiffre. Justification en tête de 31_gold_transform.sql,
+-- à énoncer partout où l'indicateur est diffusé.
 
 CREATE TABLE IF NOT EXISTS gold_recherche.coh_prevalence
 (

@@ -22,6 +22,13 @@ Six indicateurs sont demandés : durée moyenne de séjour par service, passages
 aux urgences par jour, taux de réadmission à 30 jours, relevés de constantes en
 alerte, prévalence par pathologie, distribution par âge et sexe.
 
+Les six se calculent depuis la couche gold, et `tests.verifier indicateurs` les
+restitue à chaque exécution — la valeur obtenue **et** la propriété qui la
+fonde. Un chiffre qui s'affiche ne prouve rien par lui-même : ce qui le rend
+opposable, c'est que son dénominateur, son périmètre et ses seuils soient
+vérifiés en même temps que lui. Les valeurs constatées sur le dépôt courant
+figurent au § 2.10.
+
 **La contrainte qui structure tout le projet** : il s'agit de données de santé,
 catégorie particulière au sens de l'article 9 du RGPD. Les fichiers sources
 contiennent l'identité réelle des patients — nom, prénom, numéro de sécurité
@@ -41,18 +48,25 @@ et qu'aucune lecture du cahier des charges ne laissait deviner.
 
 **`patients` est un snapshot cumulatif, les trois autres sources sont des
 deltas.** Chaque fichier journalier de patients contient toute la population
-connue à date : 16 200 lignes pour 6 000 patients réels. Les séjours,
+connue à date : 18 000 lignes pour 6 000 patients réels. Les séjours,
 diagnostics et relevés n'apparaissent au contraire qu'une fois. Appliquer la
-même stratégie d'ingestion aux quatre sources aurait multiplié par 2,7 tout
+même stratégie d'ingestion aux quatre sources aurait multiplié par 3 tout
 indicateur rapporté au patient.
 
-**Le monitoring déborde de son jour de dépôt.** Le fichier du 26 août contient
-des relevés jusqu'au 28. Agréger sur le jour de dépôt attribuerait au 26 des
-alertes survenues deux jours plus tard : l'agrégation se fait donc sur
-l'horodatage de la mesure.
+**Les sources n'ont pas le même calendrier de dépôt.** Séjours, diagnostics et
+relevés sont déposés les 28 jours du mois ; le snapshot `patients` ne l'est que
+les trois derniers. La population de référence est donc l'**union** des dépôts,
+et non celui du jour : un séjour du 1er août n'est décrit que par un fichier
+arrivé 25 jours plus tard. Une lecture jour à jour prendrait ce décalage pour
+une rupture d'intégrité référentielle.
+
+**Le monitoring déborde de son jour de dépôt.** Le fichier du 1er août contient
+des relevés jusqu'au 3, et le décalage se reproduit sur les 28 dépôts. Agréger
+sur le jour de dépôt attribuerait au 1er des alertes survenues deux jours plus
+tard : l'agrégation se fait donc sur l'horodatage de la mesure.
 
 **Les valeurs aberrantes du monitoring sont une panne de capteur, pas du bruit.**
-Fréquence cardiaque et saturation sont *toujours* invalides ensemble — 1 369 fois
+Fréquence cardiaque et saturation sont *toujours* invalides ensemble — 858 fois
 les deux, jamais l'une seule — sur exactement quatre combinaisons de butée :
 (0 ou 500 bpm) × (0 ou 120 %). Le relevé entier est écarté : un capteur
 déconnecté ne garantit la fiabilité d'aucune de ses mesures.
@@ -74,7 +88,7 @@ temporaire — et l'empreinte mémoire ne dépend pas de la taille des fichiers.
 | `nir`, `nom`, `prenom` | Supprimés                           | Directement identifiants, sans usage pour les indicateurs demandés                                                                         |
 | `birth_date`           | Généralisée à l'année               | Aucun indicateur ne requiert la date exacte                                                                                                |
 
-Un contrôle automatisé rejoue les **17 503 valeurs identifiantes** de la source
+Un contrôle automatisé rejoue les **17 384 valeurs identifiantes** de la source
 contre l'intégralité du lake et échoue si l'une d'elles y apparaît. Il vérifie
 également l'absence de collision de pseudonyme et la préservation des jointures.
 
@@ -90,44 +104,38 @@ Un filtre applicatif serait contournable par quiconque écrit sa propre requête
 Nous avons donc séparé **physiquement** : deux bases ClickHouse, deux comptes de
 lecture, des droits disjoints.
 
-**Trois rôles au total**, aux vocations distinctes :
+**Quatre comptes ClickHouse**, aux vocations distinctes :
 
-| Rôle                         | Vocation                                                                             | Ce qu'il peut atteindre                                   |
-| ---------------------------- | ------------------------------------------------------------------------------------ | --------------------------------------------------------- |
-| Direction hospitalière       | Piloter l'activité et la qualité des soins                                           | Le tableau de bord Pilotage. Aucune base, aucune requête  |
-| Recherche clinique           | Décrire des cohortes, sous contrainte de petits effectifs                            | Le tableau de bord Recherche. Aucune base, aucune requête |
-| Administration de l'entrepôt | Exploiter le pipeline, accorder les habilitations, assurer traçabilité et conformité | L'ensemble, y compris bronze et silver                    |
+| Compte             | Vocation                                                                             | Ce qu'il peut atteindre                                            |
+| ------------------ | ------------------------------------------------------------------------------------ | ------------------------------------------------------------------ |
+| `eds_admin`        | Exécuter le pipeline — créer les tables, appliquer les habilitations                 | Tout. C'est le compte du traitement, pas un compte d'usage         |
+| `eds_pilotage`     | Direction hospitalière — piloter l'activité et la qualité des soins                  | 16 colonnes de `gold_pilotage`. Rien d'autre                       |
+| `eds_recherche`    | Recherche clinique — décrire des cohortes, sous contrainte de petits effectifs       | Les deux tables d'agrégats de `gold_recherche`. Rien d'autre       |
+| `eds_exploitation` | Investigation technique — incident, piste d'audit, demande d'effacement              | `bronze`, `silver`, `quarantaine`, `ops` — en **lecture seule**    |
 
-**Un utilisateur métier consomme des indicateurs ; il n'interroge pas
-l'entrepôt.** Les deux comptes de restitution n'ont ni éditeur SQL ni générateur
-de requêtes — dans l'outil, ils ne voient aucune base de données. Cette
-distinction est essentielle ici : la couche gold contient les faits **au grain de
-l'événement**, avec le pseudonyme patient. Un compte de pilotage disposant de
-l'éditeur SQL pourrait lire `fact_sejour` ligne par ligne, ce qui excède
-largement son besoin. Il consulte donc des questions enregistrées, préparées et
-agrégées, sans jamais atteindre la table.
+**Le compte d'investigation n'est pas une commodité technique.** Dans un
+entrepôt de données de santé, quelqu'un doit pouvoir **remonter à la ligne
+d'origine** — pour diagnostiquer un incident, produire une piste d'audit, ou
+exécuter une demande d'effacement au titre du RGPD. C'est précisément ce que les
+colonnes `_fichier_source` et `_run_id` rendent possible. Ni le pilotage ni la
+recherche n'atteignent ce détail, fût-il pseudonymisé : eux n'ont accès qu'à
+gold, et seulement à leur base.
 
-Le troisième rôle n'est pas une commodité technique : dans un entrepôt de données
-de santé, quelqu'un doit pouvoir **remonter à la ligne d'origine** — pour
-diagnostiquer un incident, produire une piste d'audit, ou exécuter une demande
-d'effacement au titre du RGPD. C'est précisément ce que les colonnes
-`_fichier_source` et `_run_id` rendent possible, et l'administrateur est le seul
-à y avoir accès. Ni le pilotage ni la recherche ne peuvent atteindre le détail,
-fût-il pseudonymisé.
+Ce compte mérite d'être justifié. L'administration aurait pu investiguer avec le
+compte du pipeline, qui a tous les droits. Nous ne l'avons pas fait :
+`eds_admin` peut créer et supprimer des bases, et ce pouvoir n'a pas sa place
+dans un usage quotidien, où une requête maladroite suffirait. Le compte
+d'exploitation applique le moindre privilège — il lit tout ce qui est nécessaire
+à une investigation, et le moteur lui refuse toute écriture.
 
-**Quatre comptes de service ClickHouse**, à ne pas confondre avec les trois
-rôles : `eds_admin` pour le pipeline, `eds_pilotage` et `eds_recherche` pour les
-deux connexions de restitution, et `eds_exploitation` — en **lecture seule** sur
-`bronze`, `silver` et `ops` — pour l'investigation.
-
-**Les droits de restitution sont posés colonne par colonne.** C'est la
+**Les droits sont posés colonne par colonne, pas base par base.** C'est la
 conséquence directe du choix d'un modèle en étoile : la couche gold contenant les
 faits au grain de l'événement, un `GRANT` sur la base entière donnerait au
 pilotage l'accès à `patient_pseudo` et à `stay_id`. Or la direction consulte des
 indicateurs d'activité — elle n'a jamais à désigner un patient ni à relier deux
 séjours.
 
-`eds_pilotage` ne dispose donc que des **16 colonnes** que ses tableaux de bord
+`eds_pilotage` ne dispose donc que des **16 colonnes** que ses indicateurs
 utilisent : codes de service, dates, tranches d'âge, durées et drapeaux
 d'alerte. Ni le pseudonyme, ni l'identifiant de séjour, ni les horodatages
 précis, ni les constantes brutes ; `dim_patient` et `fact_diagnostic` ne lui sont
@@ -135,22 +143,12 @@ pas accordées du tout. Vérifié : il ne peut ni lire le pseudonyme, ni dénomb
 des patients, ni exécuter un `SELECT *` — et il calcule sans difficulté la DMS,
 les passages aux urgences et les relevés en alerte.
 
-Cette borne ne dépend pas du compte humain mais du compte de service : **même
-l'administrateur ne peut pas lire le pseudonyme s'il passe par la connexion de
-pilotage**. Il doit emprunter la connexion d'exploitation, dont l'usage est
-tracé.
-
-Ce dernier mérite d'être justifié. L'administration aurait pu investiguer avec le
-compte du pipeline, qui a tous les droits. Nous ne l'avons pas fait :
-`eds_admin` peut créer et supprimer des bases, et ce pouvoir n'a pas sa place
-derrière une interface web où une requête maladroite suffirait. Le compte
-d'exploitation applique le moindre privilège — il lit tout ce qui est nécessaire
-à une investigation, et le moteur lui refuse toute écriture. Ni l'un ni l'autre n'a accès aux couches bronze et silver,
-ce qui interdit de remonter au détail.
-
-Le refus est prononcé par le moteur, **y compris depuis l'éditeur SQL de
-Metabase**, qui se connecte avec ces comptes cloisonnés et jamais avec le compte
-d'administration.
+**Cette borne ne dépend pas de qui interroge, mais du compte employé.**
+Quiconque se connecte avec `eds_pilotage` — administrateur compris — se voit
+opposer le même refus, prononcé par le moteur. C'est ce qui distingue un
+cloisonnement d'un réglage d'interface : le jour où un outil de restitution est
+branché sur ces bases, il héritera de la borne sans pouvoir la contourner, quels
+que soient ses propres réglages.
 
 Ce choix impose que les indicateurs soient des **tables matérialisées et non des
 vues** : en ClickHouse une vue s'exécute avec les droits de l'appelant, si bien
@@ -164,14 +162,31 @@ k-anonymat sur les quasi-identifiants restants :
 
 | Granularité de l'âge  | Population à k ≥ 5 | Patients uniques | Cohortes sous le seuil |
 | --------------------- | ------------------ | ---------------- | ---------------------- |
-| Année de naissance    | 58,3 %             | **102**          | 284                    |
-| **Tranche de 10 ans** | **100 %**          | **0**            | **0**                  |
+| Année de naissance    | 62,3 %             | **185**          | 95                     |
+| **Tranche de 10 ans** | **100 %**          | **0**            | **13**                 |
 
 D'où la règle retenue : l'année n'existe qu'en pilotage, accès restreint ; la
 base recherche n'expose que des tranches de dix ans. Le filtre des petits
 effectifs (`>= 5 patients`) est appliqué **à l'écriture**, de sorte qu'aucune
 donnée sous le seuil n'existe dans cette base — il n'y a rien à penser à masquer
 au moment de la lecture.
+
+**La généralisation seule ne suffit pas, et les données le montrent.** Les
+tranches de dix ans ramènent toute la population à k ≥ 5, mais **treize cohortes
+restent sous le seuil** : la nomenclature comporte trois pathologies rares —
+mucoviscidose, amyotrophie spinale, trisomie 21 — dont les effectifs sont faibles
+quelle que soit la granularité de l'âge. C'est le filtre à l'écriture, et lui
+seul, qui garantit la propriété.
+
+**Ce filtre se déclenche donc sur les données réelles.** Deux prévalences sont
+supprimées à la construction — trisomie 21 (3 patients) et mucoviscidose (4) —
+ainsi que treize cohortes de description : elles existent au grain du fait en
+pilotage, elles n'atteignent pas `gold_recherche`. `tests.demontrer effectifs`
+va plus loin et fabrique le cas limite que les données ne fournissent pas — une
+pathologie portée par exactement 4 patients, une autre par exactement 5 —
+reconstruit silver et gold, et constate où tombe la coupe : la première est
+retenue, la seconde passe. Le seuil coupe bien *sous* 5, et non *à* 5, comme le
+demande le §5.
 
 ### 2.5 Un modèle en étoile, pas un catalogue de KPI
 
@@ -186,9 +201,9 @@ distincts, partageant des dimensions conformes**.
 
 | Fait              | Grain                         | Volume |
 | ----------------- | ----------------------------- | ------ |
-| `fact_sejour`     | un séjour                     | 14 864 |
-| `fact_diagnostic` | un code posé lors d'un séjour | 37 040 |
-| `fact_releve`     | une mesure au chevet          | 64 799 |
+| `fact_sejour`     | un séjour                     | 6 729  |
+| `fact_diagnostic` | un code posé lors d'un séjour | 12 593 |
+| `fact_releve`     | une mesure au chevet          | 40 400 |
 
 Dimensions : `dim_patient`, `dim_service`, `dim_cim10`.
 
@@ -218,7 +233,7 @@ erDiagram
     }
 
     fact_sejour {
-        string stay_id PK "GRAIN 1 sejour - 14864"
+        string stay_id PK "GRAIN 1 sejour - 6729"
         string patient_pseudo FK
         string service_code FK
         date   date_admission "axe temporel"
@@ -229,7 +244,7 @@ erDiagram
         uint8  suivi_readmission_30j "MESURE numerateur"
     }
     fact_diagnostic {
-        string stay_id "GRAIN 1 code pose - 37040"
+        string stay_id "GRAIN 1 code pose - 12593"
         string patient_pseudo FK "denormalise"
         string code_cim10 FK
         string service_code FK
@@ -239,7 +254,7 @@ erDiagram
         string sexe "denormalise"
     }
     fact_releve {
-        string stay_id "GRAIN 1 mesure - 64799"
+        string stay_id "GRAIN 1 mesure - 40400"
         string patient_pseudo FK
         string service_code FK
         date   date_mesure "axe temporel - la mesure jamais le depot"
@@ -251,7 +266,7 @@ erDiagram
 ```
 
 **Pourquoi trois faits et non un seul.** Les grains sont incompatibles : un
-séjour porte 1 à 4 diagnostics et 0 à n relevés. Les fusionner en une table
+séjour porte 1 à 3 diagnostics et 0 à n relevés. Les fusionner en une table
 unique multiplierait les lignes et fausserait toute somme — c'est le *fan trap*
 classique. Une DMS calculée sur une table jointe aux relevés compterait chaque
 séjour autant de fois qu'il a de mesures.
@@ -261,11 +276,48 @@ patient, son âge et son sexe, recopiés depuis le séjour : les questions de
 recherche portent sur des cohortes de patients par pathologie, et cette copie
 leur évite deux jointures systématiques. De même, le drapeau de réadmission est
 calculé **une fois** dans `fact_sejour` plutôt que laissé à l'outil de
-restitution : c'est une auto-jointure, impraticable dans Metabase.
+restitution : c'est une auto-jointure, hors de portée d'une requête d'analyse
+ordinaire.
 
-**L'âge est un attribut du fait, pas de la dimension.** `dim_patient` ne porte
-pas d'âge : celui-ci dépend de la date de l'événement. C'est `age_au_sejour` et
-`tranche_age` qui vivent dans les faits.
+**Les faits se construisent sur les dimensions.** Les trois dimensions sont
+écrites en premier ; les faits ensuite, et tout attribut de dimension dont un
+fait a besoin est lu **dans la dimension**, jamais re-dérivé depuis silver.
+C'est ce qui fait de l'étoile un modèle plutôt que trois tables qui se
+ressemblent, et c'est ce qui rend l'intégrité vérifiable : sept contrôles
+`fait → dimension` s'exécutent à chaque passage de `tests.verifier qualite`.
+
+Le choix a une conséquence pratique : `fact_diagnostic` lit le sexe dans
+`dim_patient` et non dans `silver.patients`. L'attribut n'a qu'une source de
+vérité, et le jour où la dimension évolue — historisation, correction — les
+faits suivent sans qu'on ait à y penser.
+
+**L'âge est un attribut du fait, dérivé contre la dimension.** `dim_patient` ne
+porte pas d'âge : celui-ci dépend de la date de l'événement. Mais il ne se
+calcule pas non plus en silver, où on l'aurait figé trop tôt : `age_au_sejour`
+croise `dim_patient.birth_year` et l'axe `date_admission` du fait, au moment où
+le fait est construit. C'est la définition même d'un attribut dérivé de fait —
+ni une propriété de la personne, ni une donnée de la source.
+
+La jointure est un `LEFT JOIN` volontaire. Un séjour dont le patient serait
+absent de la dimension doit rester dans le fait avec un âge `NULL`, jamais
+disparaître : c'est la même règle que partout ailleurs ici — on écarte
+explicitement, on ne perd pas silencieusement.
+
+**Ce que compte une cohorte : le diagnostic principal.** Chaque séjour porte un
+diagnostic principal et 0 à 2 associés — 6 729 principaux contre 5 864
+associés. Les agrégats de recherche ne retiennent que le principal, c'est-à-dire
+le **motif d'hospitalisation** : les patients hospitalisés *pour* cette
+pathologie. Inclure les comorbidités triplerait presque le compte (725 → 2 134
+patients sur l'insuffisance cardiaque, par exemple) et compterait comme cohorte
+« diabète » un patient hospitalisé pour une fracture et diabétique par ailleurs.
+
+Ce choix suit le grain du séjour, sur lequel tout l'entrepôt est construit. Il
+n'est pas neutre sur le chiffre obtenu : il doit donc accompagner l'indicateur
+partout où celui-ci est diffusé, et pas seulement figurer ici. Un indicateur dont
+on ne dit pas ce qu'il compte n'est pas exploitable — c'est le « justifier chaque
+chiffre » du §4. Le
+détail par type de diagnostic reste disponible en pilotage, où `fact_diagnostic`
+porte `est_principal`.
 
 **Le prix de ce choix.** Les faits sont au grain de l'événement et portent le
 pseudonyme patient. Ils ne peuvent donc pas être exposés à la recherche, qui
@@ -285,7 +337,7 @@ consiste à extraire les données pour les transformer avec pandas.
 
 Bronze est partitionné par jour de dépôt : rejouer un jour supprime sa partition
 et la réécrit, sans toucher aux autres. Silver et gold sont au contraire
-**recalculés intégralement** à chaque exécution — 0,15 seconde à ce volume.
+**recalculés intégralement** à chaque exécution — 0,12 seconde à ce volume.
 
 Ce choix garantit qu'un rejeu produit exactement le même état, avec un mécanisme
 explicable en une phrase. Sa limite est réelle et assumée : il ne tiendrait pas
@@ -293,17 +345,36 @@ sur plusieurs années d'historique (voir § 3.3).
 
 ### 2.8 Rien n'est perdu silencieusement
 
-Chaque ligne écartée est écrite dans `silver.rejets` avec son motif. La propriété
-en découle et se vérifie en une requête :
+Chaque ligne écartée est écrite dans `quarantaine.rejets` avec son motif. La
+propriété en découle et se vérifie en une requête :
 
 ```
-sejours      14 864 + 136   = 15 000
-diagnostics  37 040 + 340   = 37 380
-monitoring   64 799 + 1 878 = 66 677
+sejours       6 729 +    68 =  6 797
+diagnostics  12 593 +   127 = 12 720
+monitoring   40 400 + 1 378 = 41 778
 ```
 
-**Pour chaque source, silver + rejets = bronze, à la ligne près.** C'est ce qui
-distingue écarter une donnée de la perdre.
+**Pour chaque source, silver + quarantaine = bronze, à la ligne près.** C'est ce
+qui distingue écarter une donnée de la perdre.
+
+Une ligne fautive n'est pas toujours écartée : elle peut être **corrigée**,
+lorsque la valeur inutilisable ne porte aucune clé. La colonne `action` du
+registre sépare les deux issues — `'ecarte'` entre dans l'équation, `'corrige'`
+est signalée sans être soustraite. Sans cette distinction, corriger une valeur
+ferait disparaître une ligne du compte, ou bien la correction resterait
+invisible : les deux sont inacceptables dans un registre d'incidents qualité.
+
+**Pourquoi une base à part, et non `silver.rejets`.** Deux raisons, et aucune
+n'est esthétique. D'abord le contrat de la couche : silver signifie « nettoyé,
+cohérent » ; y loger la table des lignes sales brouille exactement ce que la
+couche promet, et un `GRANT SELECT ON silver.*` livrait le registre avec les
+données propres. Ensuite le cycle de vie : ces lignes portent `stay_id` et, dans
+`detail`, les valeurs brutes fautives — c'est de la donnée de santé
+pseudonymisée, mais dont la durée de conservation n'est pas celle de l'entrepôt.
+On purge une quarantaine quand l'incident qualité est instruit, pas quand la
+donnée expire. Une base distincte permet de lui appliquer sa propre rétention et
+ses propres droits — et, le jour venu, de la confier à un référent qualité sans
+lui ouvrir silver.
 
 ### 2.9 Ce qui change à chaque passage de couche
 
@@ -320,7 +391,7 @@ sources portant de l'identité. Les trois autres sont recopiées à l'octet prè
 | `patient_id` → `patient_pseudo` | HMAC-SHA256 salé, tronqué à 64 bits. Appliqué **aux deux sources** avec le même sel, pour préserver la jointure |
 | `birth_date` → `birth_year`     | Généralisation. `1933-12-09` devient `1933`                                                                     |
 | `nir`, `nom`, `prenom`          | **Supprimés** — 3 colonnes sur 7 disparaissent de `patients`                                                    |
-| Volumétrie                      | **inchangée** : 16 200 lignes entrent, 16 200 sortent                                                           |
+| Volumétrie                      | **inchangée** : 24 797 lignes entrent, 24 797 sortent                                                           |
 
 #### Lake → Bronze · typage et mise en forme tabulaire
 
@@ -330,9 +401,10 @@ que ce qu'on a laissé entrer.
 | Opération                      | Effet                                                                                                     |
 | ------------------------------ | --------------------------------------------------------------------------------------------------------- |
 | Typage explicite               | `String` → `DateTime`, `UInt16`, `Decimal(4,1)`, `LowCardinality`                                         |
-| `discharge_ts` vide → `NULL`   | 1 190 séjours en cours préservés comme tels, et non datés par défaut                                      |
-| Aplatissement du JSON          | 15 000 objets imbriqués → **37 380 lignes**, une par code posé. Aucune donnée créée ni perdue             |
-| Types larges et signés         | `Int16` pour la fréquence cardiaque : les 1 369 relevés aberrants **peuvent entrer** et donc être comptés |
+| `discharge_ts` vide → `NULL`   | 683 séjours en cours préservés comme tels, et non datés par défaut                                        |
+| Dates lues en mode **tolérant** | `parseDateTimeBestEffortOrNull` : une date illisible entre en `NULL` au lieu de faire échouer le chargement du jour entier. Un drapeau `_discharge_illisible` distingue « vide, séjour en cours » de « illisible » — que le `NULL` confondrait |
+| Aplatissement du JSON          | 6 797 objets imbriqués → **12 720 lignes**, une par code posé. Aucune donnée créée ni perdue              |
+| Types larges et signés         | `Int16` pour la fréquence cardiaque : les 858 relevés aberrants **peuvent entrer** et donc être comptés   |
 | Partitionnement                | Par jour de dépôt — c'est ce qui rend le rejeu d'un jour possible                                         |
 | Ajout de 4 colonnes techniques | `_jour_depot`, `_fichier_source`, `_ingested_at`, `_run_id`                                               |
 
@@ -341,13 +413,39 @@ que ce qu'on a laissé entrer.
 C'est la seule frontière où des lignes sont écartées, et chacune l'est avec
 son motif.
 
+**Une règle décide de ce qui a le droit d'être ici.** Silver applique les règles
+de **validité** que le sujet fournit — plages physiologiques, cohérence
+temporelle, déduplication. Les règles **métier**, que le sujet ne fournit pas et
+qui se paramètrent, appartiennent à gold : les seuils d'alerte et l'âge à
+l'événement n'y sont donc pas. Cette frontière n'est pas une convention de style,
+elle se vérifie (`tests.verifier qualite` échoue si silver recalcule un âge ou
+une alerte).
+
 | Table         | Entrée | Sortie     | Opération                                                            |
 | ------------- | ------ | ---------- | -------------------------------------------------------------------- |
-| `patients`    | 16 200 | **6 000**  | Déduplication du snapshot cumulatif : `argMax` sur le jour de dépôt  |
-| `sejours`     | 15 000 | **14 864** | −136 incohérences temporelles (`discharge_ts < admission_ts`)        |
-| `diagnostics` | 37 380 | **37 040** | −340 rattachés à un séjour écarté                                    |
-| `monitoring`  | 66 677 | **64 799** | −1 369 capteur hors plage, −509 séjour écarté (11 cumulent les deux) |
-| `rejets`      | —      | **2 354**  | Toute ligne écartée, avec son motif et son détail                    |
+| `patients`    | 18 000 | **6 000**  | Déduplication du snapshot cumulatif : `argMax` sur le jour de dépôt — 118 patients ont un attribut divergent entre redépôts ; sexe normalisé `upper(trim(…))`, hors M/F → `'inconnu'` |
+| `sejours`     | 6 797  | **6 729**  | −68 incohérences temporelles (`discharge_ts < admission_ts`), −0 date illisible |
+| `diagnostics` | 12 720 | **12 593** | −127 rattachés à un séjour écarté                                    |
+| `monitoring`  | 41 778 | **40 400** | −858 capteur hors plage, −520 séjour écarté (8 cumulent les deux)    |
+| `quarantaine` | —      | **1 573**  | Toute ligne écartée (`action = 'ecarte'`) ou corrigée (`'corrige'`), avec son motif et son détail |
+
+**Les deux contrôles de format du §3 ne se déclenchent pas sur ces données.**
+« Dates valides » et « sexe normalisé (M/F) » : la source est propre sur les
+deux — 9 045 M, 8 955 F, aucune date illisible. Les règles sont néanmoins
+implémentées, et **exercées** : `tests.demontrer qualite` injecte en bronze les
+quatre lignes fautives que la source ne contient pas, reconstruit silver
+dessus, et constate le sort de chacune avant de remettre l'entrepôt en état. Une
+règle qu'aucune donnée n'exerce ne prouve rien.
+
+Ces deux contrôles n'ont pas la même issue, et c'est délibéré :
+
+| Anomalie | Issue | Pourquoi |
+| --- | --- | --- |
+| Date d'admission illisible, ou date de sortie non vide et illisible | **Écartée** | Sans date fiable, ni la durée de séjour ni le rattachement d'un relevé ne tiennent. Le contrôle passe **avant** la cohérence temporelle : sinon la comparaison porterait sur un `NULL` et la ligne échapperait aux deux |
+| Sexe hors nomenclature | **Corrigée** en `'inconnu'`, ligne conservée et signalée | Écarter le patient orphelinerait tous ses séjours, pour un attribut purement descriptif qui n'entre dans aucune clé |
+
+C'est ce que distingue la colonne `action` de la quarantaine. Sans elle, une
+correction fausserait l'équation de conservation ou resterait invisible.
 
 Colonnes ajoutées par calcul ou par jointure :
 
@@ -355,11 +453,9 @@ Colonnes ajoutées par calcul ou par jointure :
 | ------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `duree_jours`                                          | `dateDiff` admission → sortie. **NULL** si séjour en cours                                                                                                               |
 | `est_en_cours`                                         | `discharge_ts IS NULL`                                                                                                                                                   |
-| `age_au_sejour`                                        | `toYear(admission_ts) − birth_year` — approximé à l'année                                                                                                                |
 | `service_label`                                        | Jointure avec le référentiel des services                                                                                                                                |
 | `libelle`                                              | Jointure avec la nomenclature CIM-10                                                                                                                                     |
-| `alerte_fc`, `alerte_spo2`, `alerte_temp`, `en_alerte` | Application des seuils                                                                                                                                                   |
-| `discharge_mode`                                       | Normalisation : `''` → `'inconnu'` — **1 975 séjours**. La source en compte 1 992 : les 17 autres cumulaient l'incohérence temporelle et sont partis avec les 136 exclus |
+| `discharge_mode`                                       | Normalisation : `''` → `'inconnu'` — **683 séjours**, tous en cours. Aucun séjour clos n'est privé de mode de sortie dans ce dépôt : la règle est en place, elle n'a ici à traiter que le cas légitime |
 
 #### Silver → Gold · modélisation dimensionnelle
 
@@ -368,8 +464,11 @@ exactement les volumes de silver. La transformation est structurelle.
 
 | Opération                         | Effet                                                                                              |
 | --------------------------------- | -------------------------------------------------------------------------------------------------- |
-| Éclatement en faits et dimensions | 4 tables silver → 3 faits + 3 dimensions                                                           |
+| Éclatement en faits et dimensions | 4 tables silver → 3 faits + 3 dimensions, **les dimensions d'abord**                               |
+| `age_au_sejour`                   | `toYear(date_admission) − dim_patient.birth_year` — dérivé **contre la dimension**, approximé à l'année |
 | `tranche_age`                     | Calculée dans les faits, par tranches de 10 ans                                                    |
+| `sexe`                            | Lu dans `dim_patient`, source de vérité unique                                                     |
+| `alerte_fc`, `alerte_spo2`, `alerte_temp`, `en_alerte` | Application des seuils **paramétrés** (`eds/config.py`) — règle métier, pas règle de validité |
 | `est_urgence`                     | `admission_mode = 'urgence'`                                                                       |
 | `est_sejour_index`                | Clos **et** patient non décédé — dénominateur de la réadmission                                    |
 | `suivi_readmission_30j`           | Auto-jointure résolue **une fois**, à la construction                                              |
@@ -380,20 +479,56 @@ Vers `gold_recherche`, en revanche, la réduction est massive et volontaire :
 
 | Opération                 | Effet                                                                 |
 | ------------------------- | --------------------------------------------------------------------- |
-| Agrégation                | 37 040 lignes de faits → **10** prévalences et **200** cohortes       |
-| `HAVING >= 5 patients`    | Filtre appliqué **à l'écriture** : aucune cohorte sous seuil n'existe |
+| Filtre `est_principal`    | Seul le motif d'hospitalisation est retenu : 6 729 diagnostics sur 12 593 |
+| Agrégation                | 12 593 lignes de faits → **11** prévalences et **89** cohortes        |
+| `HAVING >= 5 patients`    | Filtre appliqué **à l'écriture** : aucune cohorte sous seuil n'existe. Il retire ici 2 prévalences et 13 cohortes |
 | Généralisation de l'âge   | Tranches de 10 ans uniquement — `birth_year` absent                   |
 | Suppression du pseudonyme | `patient_pseudo` n'est pas exposé                                     |
 
 #### Bilan
 
-| Couche             | Lignes           | Détail                                                                                   | Ce qu'elle garantit                                    |
-| ------------------ | ---------------- | ---------------------------------------------------------------------------------------- | ------------------------------------------------------ |
-| **Lake**           | 46 200 + Parquet | 14 fichiers                                                                              | Copie fidèle, **sans aucune identité**                 |
-| **Bronze**         | **135 275**      | patients 16 200 · séjours 15 000 · diagnostics 37 380 · relevés 66 677 · référentiels 18 | Typé, partitionné, traçable jusqu'au fichier d'origine |
-| **Silver**         | **125 057**      | patients 6 000 · séjours 14 864 · diagnostics 37 040 · relevés 64 799 · **rejets 2 354** | Nettoyé, cohérent, enrichi — chaque exclusion motivée  |
-| **Gold pilotage**  | **122 721**      | 3 faits (14 864 + 37 040 + 64 799) · 3 dimensions (6018)                                 | Modèle dimensionnel interrogeable librement            |
-| **Gold recherche** | **210**          | prévalences 10 · cohortes 200                                                            | Agrégats anonymisés, k ≥ 5, aucun pseudonyme           |
+| Couche             | Lignes           | Détail                                                                                  | Ce qu'elle garantit                                    |
+| ------------------ | ---------------- | --------------------------------------------------------------------------------------- | ------------------------------------------------------ |
+| **Lake**           | 24 818 + Parquet | 89 fichiers                                                                             | Copie fidèle, **sans aucune identité**                 |
+| **Bronze**         | **79 316**       | patients 18 000 · séjours 6 797 · diagnostics 12 720 · relevés 41 778 · référentiels 21 | Typé, partitionné, traçable jusqu'au fichier d'origine |
+| **Silver**         | **65 722**       | patients 6 000 · séjours 6 729 · diagnostics 12 593 · relevés 40 400                    | Nettoyé, cohérent, enrichi — et rien d'autre           |
+| **Quarantaine**    | **1 573**        | toute ligne écartée, avec son motif, son détail et sa provenance                        | Rien n'est perdu silencieusement                       |
+| **Gold pilotage**  | **65 743**       | 3 faits (6 729 + 12 593 + 40 400) · 3 dimensions (6 021)                                | Modèle dimensionnel interrogeable librement            |
+| **Gold recherche** | **100**          | prévalences 11 · cohortes 89                                                            | Agrégats anonymisés, k ≥ 5, aucun pseudonyme           |
+
+
+### 2.10 Les six indicateurs, et ce qui les rend opposables
+
+Le § 4 du sujet demande de « justifier chaque chiffre ». Un tableau de bord
+affiche une valeur ; il ne dit pas sur quel dénominateur elle est calculée, ni
+si le périmètre annoncé est celui qui a servi. `tests.verifier indicateurs`
+restitue donc les six valeurs **et** les propriétés qui les fondent, dans la
+même exécution : si l'une tombe, le chiffre affiché à côté est faux, et le
+contrôle échoue avant qu'il ne soit diffusé.
+
+| Indicateur | Valeur sur le dépôt courant | Ce qui est vérifié en même temps |
+| --- | --- | --- |
+| **DMS par service** | 2,15 j (Urgences) à 9,05 j (Réanimation), sur 6 046 séjours clos | Les 8 services du référentiel sont représentés ; le dénominateur est exactement l'ensemble des séjours **clos** ; aucune durée manquante parmi eux |
+| **Passages aux urgences par jour** | 3 327 passages, 18 à 158 par jour sur 28 jours | La série journalière somme au total ; `est_urgence` ne qualifie que les admissions en urgence ; l'axe est la date d'**admission**, jamais le jour de dépôt |
+| **Réadmission à 30 jours** | 12,81 % — 647 réadmissions sur 5 051 séjours index | Le numérateur est inclus dans le dénominateur ; aucune réadmission portée par un séjour hors dénominateur ; ni décès ni séjour en cours au dénominateur |
+| **Relevés en alerte** | 2 453 sur 40 400 (6,1 %) — FC 274 · SpO2 1 108 · T° 1 071 | `en_alerte` est bien la réunion des trois motifs ; **les drapeaux sont recalculés depuis `eds/config.py`** et doivent coïncider — ce qui prouve que le seuil configuré est celui qui a servi, et non une constante figée dans le SQL |
+| **Prévalence par pathologie** | 11 pathologies, de 8 à 847 patients | L'agrégat reproduit exactement le recalcul depuis `fact_diagnostic` filtré sur le diagnostic principal ; `nb_sejours >= nb_patients` ; toute pathologie restituée existe dans la nomenclature |
+| **Distribution âge × sexe** | 89 cohortes, tranches 0-9 à 90-99 | Aucune tranche `inconnu` ; sexe borné à la nomenclature ; la somme des cases d'une pathologie ne dépasse pas son effectif de prévalence ; aucune pathologie décrite hors prévalence |
+
+**Le contrôle le plus utile est celui des seuils d'alerte.** Ils sont
+présentés comme un paramètre d'exploitation, surchargeable par l'environnement
+sans toucher au SQL (§ 3.3). Cette affirmation serait invérifiable si le
+contrôle se contentait de compter les alertes : recalculer les drapeaux à
+partir de la valeur lue dans la configuration, et exiger l'égalité, est ce qui
+transforme la promesse en propriété. Changer `EDS_SEUIL_FC_BASSE` et relancer
+déplace les deux côtés de l'égalité ensemble ; laisser un seuil en dur dans le
+SQL les ferait diverger.
+
+**Ce que ces contrôles ne remplacent pas.** Ils établissent qu'un indicateur est
+calculé sur le périmètre annoncé, pas qu'il soit cliniquement pertinent. Les
+réserves du § 3.3 — historique de 28 jours pour un indicateur à 30, monitoring
+limité à deux services, données synthétiques — restent entières et doivent
+accompagner chaque chiffre là où il est diffusé.
 
 ---
 
@@ -408,7 +543,7 @@ flowchart TD
     L["lake/<br/><i>copie pseudonymisée</i>"]
     B["<b>bronze</b><br/>tables typées<br/>partitionnées par jour de dépôt"]
     V["<b>silver</b><br/>nettoyé · dédupliqué · enrichi"]
-    R["silver.rejets<br/><i>2 354 lignes écartées, motivées</i>"]
+    R["<b>quarantaine</b>.rejets<br/><i>1 573 lignes écartées, motivées</i>"]
 
     subgraph GP["gold_pilotage — modèle en étoile"]
         direction TB
@@ -422,8 +557,8 @@ flowchart TD
     end
 
     GR["<b>gold_recherche</b><br/>agrégats · k ≥ 5<br/>tranches de 10 ans"]
-    DP["Dashboard pilotage<br/><i>compte eds_pilotage</i>"]
-    DR["Dashboard recherche<br/><i>compte eds_recherche</i>"]
+    DP["Lecture pilotage<br/><i>compte eds_pilotage</i>"]
+    DR["Lecture recherche<br/><i>compte eds_recherche</i>"]
     O[("ops.executions<br/>journal d'exécution")]
 
     S -->|Python, ligne à ligne| P --> L
@@ -451,8 +586,8 @@ d'ingestion en bronze, de construction en silver. La question *« cette donnée,
 d'où vient-elle et quand a-t-elle été traitée ? »* se répond donc en une
 requête, sans jointure entre couches.
 
-La propriété vaut aussi pour ce qui a été **écarté** : `silver.rejets` porte la
-même provenance. On peut donc remonter d'un problème de qualité au fichier de
+La propriété vaut aussi pour ce qui a été **écarté** : `quarantaine.rejets` porte
+la même provenance. On peut donc remonter d'un problème de qualité au fichier de
 dépôt qui l'a introduit — c'est ce que demande une investigation réelle.
 
 Trois nuances assumées. En silver, `patients` est une réduction de plusieurs
@@ -465,7 +600,7 @@ Enfin, les deux **référentiels** (`ref_services`, `ref_cim10`) portent le
 fichier d'origine mais pas de colonne `_jour_depot`, et ne sont pas
 partitionnés. Ce ne sont pas des données journalières : ils sont rechargés en
 entier à chaque exécution, et leur chemin de fichier —
-`lake/referentiels/2026-08-26/services.csv` — contient déjà le jour. Une
+`lake/referentiels/2026-08-01/services.csv` — contient déjà le jour. Une
 colonne de plus n'aurait rien ajouté qu'un doublon.
 
 **Gold s'arrête volontairement à `_run_id` et `_built_at`.** La provenance
@@ -479,31 +614,45 @@ cause d'échec. Aucune donnée de santé n'entre dans ce journal.
 
 ### 3.3 Limites
 
-**L'historique de 3 jours invalide le taux de réadmission.** La fenêtre
-d'observation est plus courte que celle de l'indicateur : les délais constatés
-vont de 0 à 3 jours. Le taux affiché est un **plancher**, pas une mesure. Il
-faut au moins 30 jours — 90 pour une tendance — avant de l'exploiter.
+**L'historique de 28 jours tronque encore le taux de réadmission.** La fenêtre
+d'observation reste plus courte que celle de l'indicateur — les délais constatés
+vont de 0 à 23 jours, et un patient sorti le 28 août ne peut pas être suivi
+jusqu'au 27 septembre. Le taux affiché (12,8 % sur 5 051 séjours index) est donc
+encore un **plancher**, mais l'écart n'est plus que de deux jours : il devient
+exploitable comme ordre de grandeur. Il faut 90 jours pour une tendance.
 
-**Le monitoring ne couvre que 10 % des séjours**, sur deux services (Réanimation
-40,6 %, Cardiologie 39,5 %). Les six autres n'ont aucun relevé. Les indicateurs
-de constantes sont explicitement restreints à ce périmètre et ne sont pas
-extrapolables.
+**Le monitoring ne couvre que 12,8 % des séjours**, sur deux services
+(Cardiologie 41,9 %, Réanimation 41,2 %). Les six autres n'ont aucun relevé. Les
+indicateurs de constantes sont explicitement restreints à ce périmètre et ne sont
+pas extrapolables.
 
-**Les seuils d'alerte ne sont pas fournis par le CHU.** Ceux retenus — FC hors
-[40, 120], SpO2 < 92 %, température > 38,5 °C — sont conventionnels et doivent
-être validés médicalement avant tout usage clinique.
+**Les seuils d'alerte ne sont pas fournis par le CHU, et il n'en existe aucun
+qui soit réglementaire.** Les moniteurs de chevet sortent d'usine avec des
+valeurs par défaut — chez l'adulte, alarme basse de fréquence cardiaque autour
+de 50 bpm en avertissement et 40 en critique — que chaque service, puis chaque
+soignant, sont censés adapter au patient : bêta-bloquants, sportif, nouveau-né.
+Ce n'est donc pas une propriété de la donnée mais un **paramètre
+d'exploitation**. Ceux retenus — FC hors [40, 120], SpO2 < 92 %, température
+> 38,5 °C — sont ceux d'un adulte sous surveillance standard ; ils sont
+externalisés dans `eds/config.py` et surchargeables par l'environnement
+(`EDS_SEUIL_FC_BASSE=45`), et doivent être validés médicalement avant tout usage
+clinique. Le pas suivant, hors périmètre ici faute de source pour l'alimenter,
+serait un référentiel de seuils **par service** — la réanimation et la médecine
+n'ont pas les mêmes presets.
 
 **Le recalcul intégral de silver et gold ne passera pas à l'échelle.** Il est
-instantané sur 67 000 relevés ; il deviendra le goulot d'étranglement au-delà de
+instantané sur 42 000 relevés ; il deviendra le goulot d'étranglement au-delà de
 quelques dizaines de millions de lignes.
 
 **L'âge est approximé à l'année**, conséquence directe de la généralisation
 RGPD. Erreur maximale : un an.
 
-**Les données fournies sont synthétiques et uniformément distribuées.** Les
-écarts entre services sont négligeables — DMS de 6,01 à 6,23 jours, taux
-d'alerte de 5,8 % à 6,3 %. La plateforme restitue fidèlement ce que contiennent
-les sources ; aucune conclusion médicale ne peut en être tirée.
+**Les données fournies restent synthétiques.** Elles portent désormais des
+écarts plausibles entre services — DMS de 2,15 jours aux Urgences à 9,05 en
+Réanimation, une gradation cohérente avec la nature des prises en charge — mais
+elles sont générées, et le taux d'alerte reste, lui, plat (6,1 % en Cardiologie
+comme en Réanimation). La plateforme restitue fidèlement ce que contiennent les
+sources ; aucune conclusion médicale ne peut en être tirée.
 
 **Les fichiers sources ne sont pas versionnés.** Un clone du dépôt ne suffit
 donc pas à exécuter le pipeline : il faut y placer le dépôt du CHU. C'est un
@@ -519,8 +668,8 @@ pilotage peut compter des patients, ce qu'un entrepôt de KPI pré-agrégés lui
 interdirait.
 
 Cet écart est délibéré : il achète une liberté d'analyse que les indicateurs
-figés ne permettent pas, et le croisement service × tranche d'âge du tableau de
-bord en est la démonstration. Les données restent pseudonymisées et l'accès
+figés ne permettent pas — croiser la durée de séjour par service *et* par tranche
+d'âge ne demande aucune table supplémentaire. Les données restent pseudonymisées et l'accès
 nominatif et restreint. Le compromis mérite néanmoins d'être acté avec le DPO —
 c'est le seul point où la solution donne plus que ce que le sujet demandait.
 
@@ -528,11 +677,11 @@ c'est le seul point où la solution donne plus que ce que le sujet demandait.
 
 | Priorité  | Recommandation                                                                                                                                                                                     |
 | --------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Haute** | Étendre l'historique à 90 jours minimum avant d'exploiter le taux de réadmission. Tant que ce n'est pas fait, l'indicateur doit rester marqué comme non exploitable sur le tableau de bord.        |
-| **Haute** | Faire valider les seuils d'alerte par le corps médical, et les rendre configurables plutôt que codés dans le SQL.                                                                                  |
+| **Haute** | Étendre l'historique à 90 jours minimum avant d'exploiter le taux de réadmission comme une tendance. Les 28 jours disponibles en font un ordre de grandeur, pas une mesure : la réserve doit rester énoncée partout où l'indicateur est diffusé. |
+| **Haute** | Faire valider les seuils d'alerte par le corps médical. Ils sont désormais configurables (`eds/config.py`, surcharge par `EDS_SEUIL_*`) et non plus codés dans le SQL ; reste à les faire arbitrer, puis à les décliner par service. |
 | **Haute** | Soumettre la stratégie de pseudonymisation au DPO, en particulier la conservation du triplet (année, sexe, région) en base pilotage.                                                               |
 | Moyenne   | Formaliser la gestion du sel : conservation en coffre, procédure de rotation, et conséquence assumée — sa perte rend tout rapprochement avec la source définitivement impossible.                  |
 | Moyenne   | Passer silver et gold en construction incrémentale si le volume dépasse quelques dizaines de millions de lignes.                                                                                   |
-| Moyenne   | Documenter avec le CHU le cas des **1 992 séjours clos sans mode de sortie dans la source** (13 % des séjours) : c'est une anomalie de saisie, à corriger à l'amont plutôt qu'à compenser en aval. |
+| Moyenne   | Faire confirmer par le CHU que `discharge_mode` vide signifie toujours « séjour en cours ». C'est le cas sur ce dépôt — aucun séjour clos n'en est privé — mais la normalisation en `'inconnu'` masquerait une anomalie de saisie si la règle changeait à l'amont. |
 | Basse     | Étendre l'équipement de monitoring aux autres services, ou acter que cet indicateur restera limité à deux services.                                                                                |
 | Basse     | Mettre en place une purge automatique selon les durées de conservation, actuellement non définies par le CHU.                                                                                      |

@@ -1,11 +1,13 @@
 # Entrepôt de Données de Santé — CHU
 
 Pipeline complet d'un EDS : collecte quotidienne des dépôts du CHU,
-pseudonymisation à l'ingestion, transformation en couches, restitution par
-tableaux de bord cloisonnés.
+pseudonymisation à l'ingestion, transformation en couches, jusqu'à deux bases
+**gold** cloisonnées — modèle en étoile pour le pilotage, agrégats anonymisés
+pour la recherche.
 
 **Tout s'exécute en local, en deux commandes.** Aucune étape manuelle : la
-configuration de l'entrepôt et des tableaux de bord est entièrement scriptée.
+construction de l'entrepôt et l'attribution des droits sont entièrement
+scriptées.
 
 ---
 
@@ -20,7 +22,8 @@ source-filestorage/     dépôt du CHU, lecture seule (identités en clair)
         ▼
    bronze               tables typées, partitionnées par jour de dépôt
         ▼
-   silver               nettoyé, dédupliqué, enrichi  +  table des rejets
+   silver               nettoyé, dédupliqué, enrichi
+        │  └──────────►  quarantaine     chaque ligne écartée, avec son motif
         ▼
    gold_pilotage                          gold_recherche
    modèle en étoile                       agrégats · k ≥ 5
@@ -29,8 +32,27 @@ source-filestorage/     dépôt du CHU, lecture seule (identités en clair)
    dim_patient · dim_service · dim_cim10
         │                                        │
         └──── deux bases, deux comptes, droits disjoints ────┘
-        ▼                                        ▼
-   Dashboard pilotage                     Dashboard recherche
+             le refus est prononcé par le moteur, pas par l'applicatif
+```
+
+**Où passe la frontière entre silver et gold.** Une règle, appliquée partout :
+
+| | |
+|---|---|
+| Règle de **validité** de la donnée, fournie par le sujet | **silver** — plages physiologiques, cohérence temporelle, déduplication |
+| Règle **métier**, que le sujet ne fournit pas et qui se paramètre | **gold** — seuils d'alerte, âge à l'événement |
+
+C'est pour cela que `silver.monitoring` ne porte aucun drapeau d'alerte (il
+n'existe aucun seuil réglementaire : ce sont des valeurs par défaut de
+constructeur que chaque service ajuste — voir `eds/config.py`), et que
+`silver.sejours` ne porte pas l'âge : celui-ci croise `dim_patient.birth_year`
+et la date d'admission du fait, il se calcule donc contre la dimension, à la
+construction de l'étoile.
+
+Les seuils se changent sans toucher au SQL :
+
+```bash
+EDS_SEUIL_FC_BASSE=45 .venv/bin/python -m eds.run --tout
 ```
 
 ---
@@ -41,7 +63,7 @@ source-filestorage/     dépôt du CHU, lecture seule (identités en clair)
 |---|---|
 | Docker Desktop | démarré (`docker info` doit répondre) |
 | Python | 3.11 ou plus |
-| Ports libres | `8123` ClickHouse · `3000` Metabase |
+| Ports libres | `8123` ClickHouse |
 | Données source | `eds-chu-sujet/source-filestorage/` — voir ci-dessous |
 
 > **Les données ne sont pas dans ce dépôt, volontairement.** Les fichiers
@@ -56,7 +78,7 @@ source-filestorage/     dépôt du CHU, lecture seule (identités en clair)
 ## Démarrage
 
 ```bash
-# 1. Secrets — génère le sel de 256 bits et les sept mots de passe
+# 1. Secrets — génère le sel de 256 bits et les quatre mots de passe
 python3 - <<'EOF'
 import secrets, pathlib
 mdp = lambda n=24: secrets.token_urlsafe(n)
@@ -69,74 +91,49 @@ CH_EXPLOITATION_PASSWORD={mdp()}
 
 # ── Pseudonymisation ──
 EDS_PSEUDO_SALT={secrets.token_hex(32)}
-
-# ── Metabase ──
-MB_ADMIN_EMAIL=admin@eds-chu.local
-MB_ADMIN_PASSWORD={mdp(16)}
-MB_PILOTAGE_EMAIL=pilotage@eds-chu.local
-MB_PILOTAGE_PASSWORD={mdp(16)}
-MB_RECHERCHE_EMAIL=recherche@eds-chu.local
-MB_RECHERCHE_PASSWORD={mdp(16)}
 """)
 EOF
 
 # 2. Environnement Python
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 
-# 3. Entrepôt et restitution
+# 3. Entrepôt
 docker compose up -d
 
 # 4. Pipeline complet
 .venv/bin/python -m eds.run
 ```
 
-Comptez une quinzaine de secondes pour le premier démarrage de Metabase, puis
-**environ 1,5 seconde** pour l'intégralité du pipeline.
+Comptez **environ 1,5 seconde** pour l'intégralité du pipeline.
+
+> **La couche de restitution est retirée en attendant l'arbitrage de
+> l'intervenant.** Le pipeline s'arrête donc à `gold`, qui est l'objet du
+> dossier : deux bases, un modèle en étoile, des agrégats anonymisés, et un
+> cloisonnement prononcé par le moteur. Les tableaux de bord se rebranchent sur
+> ces mêmes tables sans rien changer en amont.
 
 ### Accès
 
 | | |
 |---|---|
-| Tableaux de bord | http://localhost:3000 |
 | Console SQL | http://localhost:8123/play — utilisateur `eds_admin` |
 
-**Trois rôles, trois vocations distinctes.** Le sujet définit deux publics
+**Quatre comptes ClickHouse, un par usage.** Le sujet définit deux publics
 métier — « pilotage et recherche ne voient pas les mêmes données → droits
 d'accès distincts ». S'y ajoute l'administration de l'entrepôt, rôle à part
 entière dans un EDS : c'est elle qui exploite le pipeline, accorde les
-habilitations et répond d'une demande d'effacement.
-
-| Compte | Vocation | Ce qu'il peut faire |
-|---|---|---|
-| `pilotage@eds-chu.local` | **Direction hospitalière** — piloter l'activité et la qualité des soins | Consulter le tableau Pilotage. **Rien d'autre** : aucune base accessible, aucune requête possible |
-| `recherche@eds-chu.local` | **Recherche clinique** — décrire des cohortes | Consulter le tableau Recherche. **Rien d'autre** |
-| `admin@eds-chu.local` | **Administration de l'entrepôt** — exploiter, habiliter, tracer, assurer la conformité | Tout : les deux tableaux, les deux bases, la composition de requêtes, et les couches techniques via la console SQL |
-
-Adresses et mots de passe dans `.env` — `MB_*_EMAIL` et `MB_*_PASSWORD` pour
-chacun des trois comptes. Aucune n'est écrite en dur dans le code.
-
-> **Un utilisateur métier consomme des indicateurs, il n'interroge pas
-> l'entrepôt.** Les comptes de pilotage et de recherche n'ont ni éditeur SQL ni
-> générateur de requêtes : dans Metabase, ils ne voient même aucune base de
-> données. Sans cette restriction, un utilisateur du pilotage pourrait lire
-> `fact_sejour` ligne par ligne, avec le pseudonyme patient — bien au-delà de son
-> besoin.
->
-> L'administrateur est le **seul** à atteindre le détail des couches bronze et
-> silver, ce qui correspond à sa vocation : lui seul a besoin de remonter à la
-> ligne d'origine pour traiter un incident ou une demande d'effacement. Il
-> dispose pour cela d'une troisième connexion — *EDS — Exploitation* — qui donne
-> accès à `bronze`, `silver` et au journal `ops`.
-
-**Quatre comptes ClickHouse, un par usage.** Ce sont des comptes de service, à ne
-pas confondre avec les trois rôles ci-dessus.
+habilitations et répond d'une demande d'effacement. Chacun de ces usages a son
+compte, et aucun n'a plus de droits que son besoin.
 
 | Compte ClickHouse | Usage | Droits |
 |---|---|---|
 | `eds_admin` | le pipeline | tous — il crée les tables et applique les habilitations |
-| `eds_pilotage` | connexion Metabase Pilotage | `SELECT` **sur 16 colonnes** de `gold_pilotage` — ni `patient_pseudo`, ni `stay_id` |
-| `eds_recherche` | connexion Metabase Recherche | `SELECT` sur les colonnes des deux tables de cohortes |
-| `eds_exploitation` | connexion Metabase Exploitation | `SELECT` sur `bronze`, `silver`, `ops` — **lecture seule** |
+| `eds_pilotage` | **Direction hospitalière** — piloter l'activité et la qualité des soins | `SELECT` **sur 16 colonnes** de `gold_pilotage` — ni `patient_pseudo`, ni `stay_id` |
+| `eds_recherche` | **Recherche clinique** — décrire des cohortes | `SELECT` sur les colonnes des deux tables de cohortes |
+| `eds_exploitation` | **Investigation technique** — incident, piste d'audit, effacement | `SELECT` sur `bronze`, `silver`, `quarantaine`, `ops` — **lecture seule** |
+
+Mots de passe dans `.env` — `CH_*_PASSWORD`. Aucun n'est écrit en dur dans le
+code.
 
 > **Les droits sont posés colonne par colonne, pas base par base.** Un `GRANT`
 > sur `gold_pilotage` entier donnerait accès à `patient_pseudo` et au grain du
@@ -145,20 +142,16 @@ pas confondre avec les trois rôles ci-dessus.
 > dénombrer des patients, ni faire un `SELECT *`, ni atteindre `dim_patient` et
 > `fact_diagnostic` : le moteur refuse. Ses indicateurs, eux, fonctionnent.
 >
-> Cette borne tient **quel que soit le compte humain** : même l'administrateur,
-> s'il passe par la connexion de pilotage, ne peut pas lire le pseudonyme. Pour
-> cela, il doit emprunter la connexion d'exploitation, qui est tracée.
+> **Cette borne ne dépend pas de qui interroge, mais du compte employé.**
+> Quiconque se connecte avec `eds_pilotage` — administrateur compris — se voit
+> opposer le même refus. C'est ce qui distingue un cloisonnement d'un réglage
+> d'interface : aucun outil placé au-dessus ne peut le contourner, puisque le
+> refus vient du moteur.
 
 > Le compte d'investigation n'est **pas** celui du pipeline. `eds_admin` peut
-> créer et supprimer des bases : ce pouvoir n'a pas sa place derrière une
-> interface web. `eds_exploitation` ne peut rien écrire, quelle que soit la
-> requête saisie — le moteur refuse.
-
-La séparation joue à trois niveaux : permissions de collection (quel tableau est
-visible), permissions de données (quelle base est interrogeable), et surtout
-**droits ClickHouse** — chaque connexion utilise un compte distinct qui n'a de
-`GRANT` que sur sa base. C'est le moteur qui refuse, et aucun réglage de
-Metabase ne peut contourner cela.
+> créer et supprimer des bases : ce pouvoir n'a pas sa place dans un usage
+> quotidien. `eds_exploitation` ne peut rien écrire, quelle que soit la requête
+> saisie — le moteur refuse.
 
 ---
 
@@ -188,28 +181,47 @@ crontab ops/crontab.example     # exécution quotidienne à 03h10
 
 ## Vérifier
 
-Quatre contrôles, exécutables à tout moment. Ils constituent la démonstration
+Huit contrôles, exécutables à tout moment. Ils constituent la démonstration
 des propriétés annoncées.
 
 ```bash
-.venv/bin/python -m tests.verifier      # les trois contrôles d'un coup
-.venv/bin/python -m tests.demontrer     # les deux démonstrations
+.venv/bin/python -m tests.verifier      # les quatre contrôles d'un coup
+.venv/bin/python -m tests.demontrer     # les quatre démonstrations
 
 # ou une section à la fois
 .venv/bin/python -m tests.verifier pseudonymisation   # aucune identité dans le lake
-.venv/bin/python -m tests.verifier qualite            # bronze = silver + rejets
+.venv/bin/python -m tests.verifier qualite            # bronze = silver + quarantaine
+.venv/bin/python -m tests.verifier indicateurs        # les 6 indicateurs du sujet
 .venv/bin/python -m tests.verifier rgpd               # les 5 contraintes du sujet
 .venv/bin/python -m tests.demontrer cloisonnement     # droits d'accès disjoints
 .venv/bin/python -m tests.demontrer reprise           # erreurs et reprise sur incident
+.venv/bin/python -m tests.demontrer qualite           # les contrôles face à des lignes fautives
+.venv/bin/python -m tests.demontrer effectifs         # le seuil des 5 patients, de part et d'autre
 ```
 
 | Contrôle | Ce qu'il prouve |
 |---|---|
-| `verifier pseudonymisation` | Les 17 503 valeurs identifiantes de la source sont introuvables dans le lake ; aucune collision de pseudonyme ; les jointures survivent |
-| `verifier qualite` | Équation de conservation par source, déduplication, règles métier, intégrité référentielle — 15 contrôles |
+| `verifier pseudonymisation` | Les 17 384 valeurs identifiantes de la source sont introuvables dans le lake ; aucune collision de pseudonyme ; les jointures survivent |
+| `verifier qualite` | Équation de conservation par source, déduplication, règles métier du §3, intégrité référentielle de silver **et** du modèle en étoile — 32 contrôles |
+| `verifier indicateurs` | Les six indicateurs du §4, calculés depuis gold : leur **valeur restituée** et la propriété qui la fonde — dénominateur de la DMS, inclusion numérateur/dénominateur de la réadmission, seuils d'alerte effectivement issus de la configuration, fidélité des agrégats de recherche — 18 contrôles |
 | `verifier rgpd` | Les cinq contraintes RGPD, vérifiées sur l'entrepôt réel : pseudonymisation, minimisation, cloisonnement, petits effectifs, traçabilité — plus l'absence de donnée personnelle dans les journaux |
 | `demontrer cloisonnement` | Chaque compte accède à sa base et se voit refuser les trois autres, par le moteur |
 | `demontrer reprise` | Erreurs détectées, tracées, entrepôt cohérent, reprise par simple relance |
+| `demontrer qualite` | Des lignes fautives sont injectées en bronze : dates illisibles écartées, sexe hors nomenclature corrigé, casse redressée sans bruit, équation de conservation intacte — puis l'entrepôt est remis en état |
+| `demontrer effectifs` | Deux cohortes sont fabriquées de part et d'autre du seuil RGPD : celle de 4 patients existe au grain du fait mais n'atteint pas la base recherche, celle de 5 passe — le filtre coupe **sous** 5, pas à 5 |
+
+> **Pourquoi fabriquer des cas qui n'existent pas.** Les données fournies sont
+> propres sur deux des garanties annoncées : dates valides et sexe normalisé
+> M/F. Une règle qu'aucune donnée n'exerce ne prouve rien : `demontrer qualite`
+> fabrique donc ces cas, vérifie ce que l'entrepôt en fait, puis recharge bronze
+> depuis le lake.
+>
+> Le seuil des petits effectifs, lui, **se déclenche sur les données réelles** :
+> deux prévalences (trisomie 21, 3 patients ; mucoviscidose, 4) et treize
+> cohortes de description sont supprimées à la construction. `demontrer
+> effectifs` reste utile pour une autre raison — il fabrique le cas limite exact,
+> une cohorte de 4 et une de 5, et montre que la coupe tombe **sous** 5 et non à
+> 5.
 
 ---
 
@@ -236,8 +248,6 @@ un incident, on corrige la cause et on relance — l'exécution est idempotente.
 | `argument invalide` | Jour mal formé en ligne de commande | Utiliser le format `AAAA-MM-JJ` |
 | `aucun fichier trouvé pour le …` | Jour absent du dépôt du CHU | Vérifier `eds-chu-sujet/source-filestorage/` |
 | `Unknown expression identifier` sur une colonne | Un DDL a été modifié : `CREATE TABLE IF NOT EXISTS` **ne migre pas** un schéma existant | Supprimer la table concernée (`DROP TABLE …`) puis relancer le pipeline |
-| Tableaux de bord vides | Metabase configuré avant le premier chargement | `.venv/bin/python -m eds.metabase` |
-| Restitution en échec, entrepôt intact | Metabase indisponible | Idem — l'entrepôt reste valide |
 
 **Repartir de zéro** (destructif, l'entrepôt est reconstruit intégralement) :
 
@@ -265,7 +275,7 @@ Les cinq contraintes du sujet sont vérifiables en une commande
 |---|---|---|
 | **Pseudonymisation** | HMAC-SHA256 salé appliqué **pendant la copie** : les identités ne sont écrites nulle part. Aucune colonne `nir`, `nom`, `prenom`, `birth_date` ni `patient_id` n'existe dans l'entrepôt. | `eds/lake.py` |
 | **Minimisation** | Trois colonnes supprimées à la source, date de naissance généralisée à l'année. La base recherche n'expose ni `birth_year`, ni `patient_pseudo`, ni `region`. | `eds/lake.py`, `sql/31_gold_transform.sql` |
-| **Cloisonnement** | Deux bases séparées, quatre comptes de service bornés, droits posés **colonne par colonne** sur la restitution. Le refus vient du moteur. | `sql/50_droits.sql` |
+| **Cloisonnement** | Deux bases séparées, quatre comptes bornés, droits posés **colonne par colonne** sur la couche gold. Le refus vient du moteur. | `sql/50_droits.sql` |
 | **Petits effectifs** | `HAVING count(DISTINCT patient) >= 5` appliqué **à l'écriture** : aucune cohorte sous seuil n'existe dans la base. | `sql/31_gold_transform.sql` |
 | **Traçabilité** | Chaque ligne porte son fichier d'origine, son horodatage d'ingestion et l'identifiant du run. Le journal `ops.executions` conserve chaque étape, succès comme échec. | `sql/10_bronze.sql`, `sql/60_ops.sql` |
 
@@ -280,7 +290,7 @@ Les cinq contraintes du sujet sont vérifiables en une commande
 ## Organisation du dépôt
 
 ```
-docker-compose.yml       ClickHouse 25.8 + Metabase v0.56.13, versions épinglées
+docker-compose.yml       ClickHouse 25.8, version épinglée
 requirements.txt         2 dépendances Python
 
 eds/                     le pipeline
@@ -289,23 +299,21 @@ eds/                     le pipeline
   warehouse.py           client ClickHouse, exécution SQL, chargement bronze
   journal.py             journalisation JSON + console
   run.py                 orchestrateur — point d'entrée
-  metabase.py            configuration automatisée de la restitution
-  dashboards.py          définition déclarative des tableaux de bord
 
 sql/                     toute la transformation, versionnée
-  00_databases.sql       les cinq bases
+  00_databases.sql       les six bases
   10_bronze.sql          tables typées, partitionnées
-  20_silver.sql          tables nettoyées + table des rejets
+  15_quarantaine.sql     registre des lignes écartées ou corrigées
+  20_silver.sql          tables nettoyées, dédupliquées, enrichies
   21_silver_transform.sql  les règles qualité — le cœur métier
-  30_gold.sql            indicateurs, deux bases séparées
-  31_gold_transform.sql  définition des six indicateurs
+  30_gold.sql            modèle en étoile, deux bases séparées
+  31_gold_transform.sql  dimensions puis faits, et les six indicateurs
   50_droits.sql          comptes et droits — le cloisonnement
   60_ops.sql             journal d'exécution
   99_verifications.sql   requêtes d'inspection pour la console SQL
 
-tests/                   les cinq contrôles et démonstrations
+tests/                   les huit contrôles et démonstrations
 exploration/             profilage initial des sources (DuckDB)
-metabase/dashboards.json export des tableaux de bord
 ops/crontab.example      planification
 docs/                    rapport et documentation
 ```
@@ -320,8 +328,9 @@ Détaillés et justifiés dans [`docs/RAPPORT.md`](docs/RAPPORT.md).
   identités ne sont écrites nulle part, pas même dans un répertoire temporaire.
 - **ClickHouse lit les fichiers lui-même** (`file()` sur un montage en lecture
   seule). Python n'envoie que du SQL : aucune donnée ne transite par sa mémoire.
-- **Le cloisonnement est physique** — deux bases, deux comptes, droits disjoints.
-  Le refus est prononcé par le moteur, y compris depuis Metabase.
+- **Le cloisonnement est physique** — deux bases, deux comptes, droits disjoints,
+  posés colonne par colonne. Le refus est prononcé par le moteur : aucun outil
+  placé au-dessus de l'entrepôt ne peut le contourner.
 - **Les indicateurs sont des tables, pas des vues.** En ClickHouse une vue
   s'exécute avec les droits de l'appelant : une vue gold obligerait à ouvrir
   l'accès à silver et ferait tomber le cloisonnement.

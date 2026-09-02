@@ -11,3 +11,5 @@ CREATE DATABASE IF NOT EXISTS gold_recherche;
 CREATE DATABASE IF NOT EXISTS ops;
 
 -- journal d'exécution du pipeline
+CREATE DATABASE IF NOT EXISTS quarantaine;
+-- registre des lignes écartées (cf. 15_quarantaine.sql)

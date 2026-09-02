@@ -7,6 +7,7 @@ passe proviennent de `.env`, qui n'est pas versionné.
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 
 RACINE = Path(__file__).resolve().parent.parent
@@ -18,6 +19,32 @@ SOURCE = RACINE / "eds-chu-sujet" / "source-filestorage"
 LAKE = RACINE / "lake"
 
 SOURCES_CONNUES = ("patients", "sejours", "diagnostics", "monitoring", "referentiels")
+
+# ── Seuils d'alerte clinique ─────────────────────────────────────────────
+#
+# À ne pas confondre avec les plages de plausibilité du §3 du sujet (FC
+# 20-250, SpO2 50-100, temp 30-45), qui sont des règles de VALIDITÉ de la
+# donnée et vivent en silver. Ici, il s'agit de qualifier une mesure valide
+# d'« en alerte » : c'est une décision clinique, pas une propriété de la
+# donnée, et le sujet n'en fournit aucune valeur.
+#
+# Il n'existe d'ailleurs aucun seuil réglementaire. Les moniteurs de chevet
+# sortent d'usine avec des valeurs par défaut (chez l'adulte, alarme basse de
+# fréquence cardiaque autour de 50 bpm en avertissement, 40 en critique) que
+# chaque service — réanimation, USIC, télémétrie, médecine — puis chaque
+# soignant sont censés adapter au patient : bêta-bloquants, sportif, nouveau-
+# né. Les valeurs ci-dessous sont donc un PARAMÈTRE D'EXPLOITATION, à valider
+# par le corps médical, et surchargeable sans toucher au SQL.
+#
+# Elles sont substituées dans 31_gold_transform.sql, comme {run_id}.
+SEUILS_ALERTE_DEFAUT = {
+    "fc_basse": "40",  # bpm — alarme basse critique adulte
+    "fc_haute": "120",  # bpm
+    "spo2_basse": "92",  # %
+    "temp_haute": "38.5",  # °C
+}
+
+_NOMBRE = re.compile(r"-?\d+(?:\.\d+)?")
 
 
 def _charger_env(chemin: Path = RACINE / ".env") -> None:
@@ -42,3 +69,23 @@ def exiger(nom: str) -> str:
             "Copiez .env.example en .env et renseignez-la."
         )
     return valeur
+
+
+def seuils_alerte() -> dict[str, str]:
+    """Seuils d'alerte, surchargeables par l'environnement.
+
+    `EDS_SEUIL_FC_BASSE=45` dans .env suffit à changer la règle sans toucher
+    au SQL. Toute valeur non numérique est refusée ici, à la frontière, et
+    non au moment de l'interpolation.
+    """
+    _charger_env()
+    seuils = {}
+    for nom, defaut in SEUILS_ALERTE_DEFAUT.items():
+        valeur = os.environ.get(f"EDS_SEUIL_{nom.upper()}", "").strip() or defaut
+        if not _NOMBRE.fullmatch(valeur):
+            raise RuntimeError(
+                f"Seuil d'alerte invalide : EDS_SEUIL_{nom.upper()}={valeur!r} "
+                "(un nombre est attendu)."
+            )
+        seuils[nom] = valeur
+    return seuils

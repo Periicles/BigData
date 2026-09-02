@@ -25,7 +25,7 @@ CREATE USER IF NOT EXISTS eds_recherche
 -- grain du séjour, très au-delà du besoin : la direction consulte des
 -- indicateurs d'activité, elle n'a jamais à désigner un patient.
 --
--- Les droits sont donc limités aux seules colonnes que les tableaux de bord
+-- Les droits sont donc limités aux seules colonnes que ses indicateurs
 -- utilisent. Ni `patient_pseudo`, ni `stay_id`, ni les horodatages précis,
 -- ni les constantes brutes n'y figurent. `dim_patient` et `fact_diagnostic`
 -- ne sont pas accordées du tout.
@@ -64,11 +64,17 @@ GRANT SELECT(code_cim10, pathologie, tranche_age, sexe, nb_patients)
 -- Il n'utilise PAS pour cela le compte du pipeline : celui-ci peut créer et
 -- supprimer des bases, ce qui n'a pas sa place derrière une interface web.
 -- Un compte distinct, en LECTURE SEULE sur les couches techniques, applique
--- le principe de moindre privilège : depuis Metabase, aucune écriture n'est
--- possible, quelle que soit la requête saisie.
+-- le principe de moindre privilège : aucune écriture n'est possible avec ce
+-- compte, quelle que soit la requête saisie.
 CREATE USER IF NOT EXISTS eds_exploitation
     IDENTIFIED WITH sha256_password BY '{mdp_exploitation}';
 
-GRANT SELECT ON bronze.* TO eds_exploitation;
-GRANT SELECT ON silver.* TO eds_exploitation;
-GRANT SELECT ON ops.*    TO eds_exploitation;
+GRANT SELECT ON bronze.*      TO eds_exploitation;
+GRANT SELECT ON silver.*      TO eds_exploitation;
+GRANT SELECT ON ops.*         TO eds_exploitation;
+
+-- La quarantaine est une base à part, donc un GRANT à part : c'est
+-- précisément ce que permet de l'avoir sortie de silver. Le jour où sa
+-- rétention diffère de celle de l'entrepôt, ou bien où l'on veut la confier à
+-- un référent qualité sans lui ouvrir silver, rien d'autre n'est à toucher.
+GRANT SELECT ON quarantaine.* TO eds_exploitation;

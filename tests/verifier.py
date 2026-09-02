@@ -1,16 +1,19 @@
-"""Contrôles automatisés de l'entrepôt — trois sections indépendantes.
+"""Contrôles automatisés de l'entrepôt — quatre sections indépendantes.
 
   pseudonymisation  les identités réelles de la source sont rejouées contre
                     l'intégralité du lake ; aucune ne doit s'y trouver
-  qualite           équation de conservation bronze = silver + rejets, règles
-                    métier du sujet, intégrité référentielle
+  qualite           équation de conservation bronze = silver + quarantaine,
+                    règles métier du sujet, intégrité référentielle de
+                    silver ET du modèle en étoile
+  indicateurs       les six indicateurs du § 4, calculés depuis gold : leur
+                    valeur restituée, et la propriété qui la fonde
   rgpd              les cinq contraintes du § 5, vérifiées sur l'entrepôt réel,
                     plus l'absence de donnée personnelle dans les journaux
 
 Ce sont des preuves, pas des déclarations : chacune interroge l'état réel et
 échoue si la propriété annoncée ne tient pas.
 
-    python -m tests.verifier            # les trois sections
+    python -m tests.verifier            # les quatre sections
     python -m tests.verifier rgpd       # une seule
 """
 
@@ -22,7 +25,7 @@ import sys
 from collections import defaultdict
 
 from eds import choisir_sections
-from eds.config import LAKE, RACINE, SOURCE
+from eds.config import LAKE, RACINE, SOURCE, seuils_alerte
 from eds.lake import lister_jours, pseudonymiser
 from eds.warehouse import client
 
@@ -53,6 +56,11 @@ class Rapport:
         self.controle(libelle, not anomalies)
         for a in anomalies[:5]:
             print(f"         {a}")
+
+    def valeur(self, libelle: str, valeur: str) -> None:
+        """Affiche un chiffre restitué. Ce n'est pas un contrôle : c'est
+        l'indicateur lui-même, montré à côté des propriétés qui le fondent."""
+        print(f"{GRIS}  ·{RAZ}    {libelle:54} {valeur}")
 
 
 # ── Pseudonymisation ─────────────────────────────────────────────────────
@@ -91,19 +99,32 @@ def _collisions(correspondance: dict[str, str]) -> list[str]:
 
 
 def _jointure() -> list[str]:
-    """Le pseudonyme doit rester stable entre patients et séjours."""
+    """Le pseudonyme doit rester stable entre patients et séjours.
+
+    La population de référence est l'UNION des dépôts de `patients`, pas le
+    dépôt du jour : le snapshot est cumulatif et suit son propre calendrier —
+    un séjour du 1er août est décrit par un fichier patients déposé plus tard.
+    Comparer jour à jour ferait passer ce décalage pour une rupture de
+    jointure.
+    """
+    pseudos_patients: set[str] = set()
+    for jour in lister_jours("patients"):
+        chemin = LAKE / "patients" / jour / "patients.csv"
+        if not chemin.exists():
+            continue
+        with chemin.open(newline="", encoding="utf-8") as f:
+            pseudos_patients |= {l["patient_pseudo"] for l in csv.DictReader(f)}
+
     anomalies = []
     for jour in lister_jours("sejours"):
-        chemin_p = LAKE / "patients" / jour / "patients.csv"
-        pseudos_patients = set()
-        if chemin_p.exists():
-            with chemin_p.open(newline="", encoding="utf-8") as f:
-                pseudos_patients = {l["patient_pseudo"] for l in csv.DictReader(f)}
-        with (LAKE / "sejours" / jour / "sejours.csv").open(newline="", encoding="utf-8") as f:
+        chemin = LAKE / "sejours" / jour / "sejours.csv"
+        if not chemin.exists():
+            continue
+        with chemin.open(newline="", encoding="utf-8") as f:
             pseudos_sejours = {l["patient_pseudo"] for l in csv.DictReader(f)}
         orphelins = pseudos_sejours - pseudos_patients
         if orphelins:
-            anomalies.append(f"{jour} : {len(orphelins)} pseudonyme(s) de séjour absents des patients du jour")
+            anomalies.append(f"{jour} : {len(orphelins)} pseudonyme(s) de séjour absents du snapshot patients")
     return anomalies
 
 
@@ -120,23 +141,39 @@ def qualite(r: Rapport) -> None:
     ch = client()
     n = lambda requete: int(ch.command(requete))
 
-    r.titre("Équation de conservation : bronze = silver + rejets")
+    r.titre("Équation de conservation : bronze = silver + quarantaine")
     for source in ("sejours", "diagnostics", "monitoring"):
         bronze = n(f"SELECT count() FROM bronze.{source}")
         silver = n(f"SELECT count() FROM silver.{source}")
-        rejets = n(f"SELECT count() FROM silver.rejets WHERE source = '{source}'")
+        rejets = n(f"""SELECT count() FROM quarantaine.rejets
+                       WHERE source = '{source}' AND action = 'ecarte'""")
         r.egal(f"{source} : {silver} + {rejets}", silver + rejets, bronze)
 
     r.titre("Déduplication du snapshot cumulatif")
-    r.egal("patients : 16 200 lignes -> patients distincts",
+    r.egal(f"patients : {n('SELECT count() FROM bronze.patients')} lignes -> patients distincts",
            n("SELECT count() FROM silver.patients"),
            n("SELECT uniqExact(patient_pseudo) FROM bronze.patients"))
     r.egal("aucun doublon en silver.patients",
            n("SELECT count() - uniqExact(patient_pseudo) FROM silver.patients"), 0)
 
+    # Une correction n'est pas une exclusion : elle ne doit jamais entrer dans
+    # l'équation, sinon corriger une valeur ferait disparaître une ligne du
+    # compte. Le contrôle vérifie que les deux issues restent bien séparées.
+    r.egal("aucune correction comptée comme une exclusion",
+           n("""SELECT count() FROM quarantaine.rejets
+                WHERE action NOT IN ('ecarte', 'corrige')"""), 0)
+
     r.titre("Règles métier du sujet")
+    # Attendu dérivé de bronze, non figé : un séjour en cours ne peut être ni
+    # temporellement incohérent (il n'a pas de sortie) ni porteur d'une date de
+    # sortie illisible. Tous ceux dont l'admission est lisible doivent donc se
+    # retrouver en silver, quel que soit le dépôt.
     r.egal("séjours en cours conservés (discharge_ts vide)",
-           n("SELECT count() FROM silver.sejours WHERE est_en_cours = 1"), 1190)
+           n("SELECT count() FROM silver.sejours WHERE est_en_cours = 1"),
+           n("""SELECT count() FROM bronze.sejours
+                WHERE admission_ts IS NOT NULL
+                  AND _discharge_illisible = 0
+                  AND discharge_ts IS NULL"""))
     r.egal("aucune durée négative ne subsiste",
            n("SELECT count() FROM silver.sejours WHERE duree_jours < 0"), 0)
     r.egal("durée NULL si et seulement si séjour en cours",
@@ -149,6 +186,23 @@ def qualite(r: Rapport) -> None:
                 WHERE heart_rate NOT BETWEEN 20 AND 250
                    OR spo2 NOT BETWEEN 50 AND 100
                    OR temp_c NOT BETWEEN 30 AND 45"""), 0)
+
+    # « Valeurs manquantes / formats » — la ligne du §3 que couvrent les deux
+    # contrôles suivants. La source est propre aujourd'hui : ce qui est vérifié
+    # ici, c'est que la règle existe et tient, pas qu'elle a eu à s'appliquer.
+    r.egal("sexe normalisé : aucune valeur hors M/F/inconnu",
+           n("SELECT count() FROM silver.patients WHERE sex NOT IN ('M','F','inconnu')"), 0)
+    r.egal("sexe : aucune casse ni espace résiduel",
+           n("SELECT count() FROM silver.patients WHERE sex != upper(trim(sex))"), 0)
+    r.egal("aucune date illisible en silver",
+           n("""SELECT count() FROM bronze.sejours
+                WHERE (admission_ts IS NULL OR _discharge_illisible = 1)
+                  AND stay_id IN (SELECT stay_id FROM silver.sejours)"""), 0)
+    r.egal("une date illisible est écartée, pas confondue avec un séjour en cours",
+           n("""SELECT count() FROM bronze.sejours
+                WHERE _discharge_illisible = 1
+                  AND stay_id NOT IN (SELECT cle FROM quarantaine.rejets
+                                      WHERE source = 'sejours' AND motif = 'date_illisible')"""), 0)
 
     r.titre("Intégrité référentielle de silver")
     r.egal("aucun séjour orphelin de patient",
@@ -165,6 +219,213 @@ def qualite(r: Rapport) -> None:
     r.egal("aucun code CIM-10 non résolu",
            n("SELECT count() FROM silver.diagnostics WHERE libelle = 'inconnu'"), 0)
 
+    # Le fait se construit SUR les dimensions : toute clé étrangère d'un fait
+    # doit désigner un membre existant. Sans ce contrôle, une clé orpheline
+    # ne se verrait qu'à la restitution — la ligne disparaîtrait d'un graphe
+    # joint à la dimension, silencieusement.
+    r.titre("Intégrité du modèle en étoile : fait -> dimension")
+    for fait, cle, dimension in (
+        ("fact_sejour",     "patient_pseudo", "dim_patient"),
+        ("fact_sejour",     "service_code",   "dim_service"),
+        ("fact_diagnostic", "patient_pseudo", "dim_patient"),
+        ("fact_diagnostic", "code_cim10",     "dim_cim10"),
+        ("fact_diagnostic", "service_code",   "dim_service"),
+        ("fact_releve",     "patient_pseudo", "dim_patient"),
+        ("fact_releve",     "service_code",   "dim_service"),
+    ):
+        r.egal(f"{fait}.{cle} -> {dimension}",
+               n(f"""SELECT count() FROM gold_pilotage.{fait}
+                     WHERE {cle} NOT IN (SELECT {cle} FROM gold_pilotage.{dimension})"""), 0)
+
+    # L'autre moitié de l'intégrité référentielle : une clé de dimension doit
+    # être UNIQUE. Une nomenclature livrée avec une ligne dupliquée passerait
+    # dans la dimension, et chaque jointure fait -> dimension doublerait les
+    # lignes du service concerné — la DMS compterait ses séjours deux fois,
+    # sans qu'aucune erreur ne soit levée.
+    for dimension, cle in (
+        ("dim_patient", "patient_pseudo"),
+        ("dim_service", "service_code"),
+        ("dim_cim10",   "code_cim10"),
+    ):
+        r.egal(f"{dimension}.{cle} est unique",
+               n(f"SELECT count() - uniqExact({cle}) FROM gold_pilotage.{dimension}"), 0)
+
+    # L'âge est dérivé du fait CONTRE la dimension. S'il manquait, c'est que
+    # la jointure a échoué : le contrôle le dit avant que l'indicateur ne sorte.
+    r.egal("age_au_sejour résolu pour tout séjour",
+           n("SELECT count() FROM gold_pilotage.fact_sejour WHERE age_au_sejour IS NULL"), 0)
+    r.egal("silver ne calcule plus d'âge ni d'alerte",
+           n("""SELECT count() FROM system.columns
+                WHERE database = 'silver'
+                  AND name IN ('age_au_sejour', 'alerte_fc', 'alerte_spo2',
+                               'alerte_temp', 'en_alerte')"""), 0)
+
+
+# ── Indicateurs ──────────────────────────────────────────────────────────
+def indicateurs(r: Rapport) -> None:
+    """Les six indicateurs du §4, calculés depuis gold et affichés.
+
+    Un indicateur juste par construction ne prouve rien : chaque bloc montre
+    la valeur restituée ET la propriété qui la fonde. Si la propriété tombe,
+    le chiffre affiché à côté est faux — et le contrôle échoue avant qu'il ne
+    soit diffusé.
+    """
+    ch = client()
+    n = lambda requete: int(ch.command(requete))
+    lignes = lambda requete: ch.query(requete).result_rows
+
+    # Un indicateur ne se calcule pas sur un entrepôt vide : sans ce garde-fou,
+    # la section échouerait sur une division par zéro, ce qui ne dit rien de la
+    # propriété. On énonce la cause réelle — gold n'a pas été construit.
+    vides = [t for t in ("fact_sejour", "fact_diagnostic", "fact_releve")
+             if n(f"SELECT count() FROM gold_pilotage.{t}") == 0]
+    r.controle("la couche gold est peuplée", not vides,
+               f"table(s) vide(s) : {', '.join(vides)} — lancer `python -m eds.run`"
+               if vides else "")
+    if vides:
+        return
+
+    # ① DMS par service ---------------------------------------------------
+    # La durée n'existe que sur un séjour clos : un séjour en cours n'a pas de
+    # sortie, l'inclure au dénominateur écraserait la moyenne vers le bas.
+    r.titre("① Durée moyenne de séjour, par service")
+    dms = lignes("""
+        SELECT s.service, round(avg(f.duree_jours), 2), count()
+        FROM gold_pilotage.fact_sejour AS f
+        INNER JOIN gold_pilotage.dim_service AS s USING (service_code)
+        WHERE f.est_en_cours = 0
+        GROUP BY s.service ORDER BY 2 DESC""")
+    for service, moyenne, nb in dms:
+        r.valeur(f"{service}", f"{moyenne:>6} jours   {GRIS}sur {nb} séjours clos{RAZ}")
+    r.egal("un service du référentiel sans DMS",
+           n("SELECT count() FROM gold_pilotage.dim_service") - len(dms), 0)
+    r.egal("le dénominateur est bien l'ensemble des séjours clos",
+           sum(l[2] for l in dms),
+           n("SELECT countIf(est_en_cours = 0) FROM gold_pilotage.fact_sejour"))
+    r.egal("aucune durée manquante sur un séjour clos",
+           n("""SELECT count() FROM gold_pilotage.fact_sejour
+                WHERE est_en_cours = 0 AND duree_jours IS NULL"""), 0)
+
+    # ② Passages aux urgences par jour ------------------------------------
+    r.titre("② Passages aux urgences, par jour")
+    total_urgences = n("SELECT countIf(est_urgence) FROM gold_pilotage.fact_sejour")
+    serie = lignes("""
+        SELECT count(), min(nb), round(avg(nb), 1), max(nb), sum(nb) FROM (
+            SELECT date_admission, countIf(est_urgence) AS nb
+            FROM gold_pilotage.fact_sejour GROUP BY date_admission)""")[0]
+    jours, mini, moyen, maxi, cumul = serie
+    r.valeur("total sur la période", f"{total_urgences} passages")
+    r.valeur(f"par jour sur {jours} jours", f"min {mini} · moyenne {moyen} · max {maxi}")
+    r.egal("la série journalière somme au total", cumul, total_urgences)
+    # L'axe est la date d'ADMISSION du fait, jamais le jour de dépôt : les
+    # deux diffèrent, et confondre les deux daterait mal chaque passage.
+    r.egal("est_urgence ne qualifie que les admissions en urgence",
+           n("""SELECT count() FROM gold_pilotage.fact_sejour
+                WHERE est_urgence != (admission_mode = 'urgence')"""), 0)
+
+    # ③ Taux de réadmission à 30 jours ------------------------------------
+    # Numérateur et dénominateur sont posés dans le fait, pas laissés au
+    # consommateur : c'est une auto-jointure, et deux calculs concurrents
+    # donneraient deux taux.
+    r.titre("③ Taux de réadmission à 30 jours")
+    index_, readmis = lignes("""
+        SELECT sum(est_sejour_index), sum(suivi_readmission_30j)
+        FROM gold_pilotage.fact_sejour""")[0]
+    r.valeur("taux", f"{round(100 * readmis / index_, 2)} %   "
+                     f"{GRIS}{readmis} réadmissions sur {index_} séjours index{RAZ}")
+    r.controle("le numérateur est inclus dans le dénominateur", readmis <= index_,
+               f"{readmis} / {index_}")
+    r.egal("aucune réadmission portée par un séjour hors dénominateur",
+           n("""SELECT count() FROM gold_pilotage.fact_sejour
+                WHERE suivi_readmission_30j = 1 AND est_sejour_index = 0"""), 0)
+    # Un patient déclaré décédé puis « réadmis » fausserait le taux : la règle
+    # métier standard exclut ces séjours du dénominateur.
+    r.egal("aucun séjour clos par décès dans le dénominateur",
+           n("""SELECT count() FROM gold_pilotage.fact_sejour
+                WHERE est_sejour_index = 1 AND discharge_mode = 'deces'"""), 0)
+    r.egal("aucun séjour en cours dans le dénominateur",
+           n("""SELECT count() FROM gold_pilotage.fact_sejour
+                WHERE est_sejour_index = 1 AND est_en_cours = 1"""), 0)
+
+    # ④ Relevés en alerte -------------------------------------------------
+    r.titre("④ Relevés de constantes en alerte")
+    seuils = seuils_alerte()
+    total, alertes, a_fc, a_spo2, a_temp = lignes("""
+        SELECT count(), countIf(en_alerte), countIf(alerte_fc),
+               countIf(alerte_spo2), countIf(alerte_temp)
+        FROM gold_pilotage.fact_releve""")[0]
+    r.valeur("relevés en alerte", f"{alertes} sur {total}   "
+                                  f"{GRIS}{round(100 * alertes / total, 1)} %{RAZ}")
+    r.valeur("par motif", f"FC {a_fc} · SpO2 {a_spo2} · température {a_temp}")
+    r.egal("en_alerte est bien la réunion des trois motifs",
+           n("""SELECT count() FROM gold_pilotage.fact_releve
+                WHERE en_alerte != (alerte_fc OR alerte_spo2 OR alerte_temp)"""), 0)
+    # Le contrôle qui compte : les seuils sont un PARAMÈTRE d'exploitation.
+    # Recalculer les drapeaux depuis eds/config.py prouve que la valeur
+    # configurée est bien celle qui a servi, et non une constante figée en SQL.
+    r.egal(f"seuils appliqués = ceux de la configuration "
+           f"(FC {seuils['fc_basse']}–{seuils['fc_haute']}, "
+           f"SpO2 {seuils['spo2_basse']}, T° {seuils['temp_haute']})",
+           n(f"""SELECT count() FROM gold_pilotage.fact_releve
+                 WHERE en_alerte != (heart_rate < {seuils['fc_basse']}
+                                  OR heart_rate > {seuils['fc_haute']}
+                                  OR spo2 < {seuils['spo2_basse']}
+                                  OR temp_c > {seuils['temp_haute']})"""), 0)
+
+    # ⑤ Prévalence par pathologie -----------------------------------------
+    # L'indicateur compte le MOTIF d'hospitalisation, pas la pathologie dans
+    # la population : seul le diagnostic principal entre dans le calcul.
+    r.titre("⑤ Prévalence par pathologie (diagnostic principal)")
+    for pathologie, patients, sejours in lignes("""
+            SELECT pathologie, nb_patients, nb_sejours
+            FROM gold_recherche.coh_prevalence ORDER BY nb_patients DESC"""):
+        r.valeur(pathologie[:52], f"{patients:>5} patients   {GRIS}{sejours} séjours{RAZ}")
+    r.egal("la prévalence reproduit exactement l'agrégat des faits",
+           n("SELECT count() FROM gold_recherche.coh_prevalence"),
+           n("""SELECT count() FROM (
+                    SELECT code_cim10, uniqExact(patient_pseudo) AS nb
+                    FROM gold_pilotage.fact_diagnostic
+                    WHERE est_principal = 1
+                    GROUP BY code_cim10 HAVING nb >= 5)"""))
+    r.egal("un patient ne peut pas avoir plus de séjours que lui-même",
+           n("""SELECT count() FROM gold_recherche.coh_prevalence
+                WHERE nb_sejours < nb_patients"""), 0)
+    r.egal("toute pathologie restituée existe dans la nomenclature",
+           n("""SELECT count() FROM gold_recherche.coh_prevalence
+                WHERE code_cim10 NOT IN
+                      (SELECT code_cim10 FROM gold_pilotage.dim_cim10)"""), 0)
+
+    # ⑥ Distribution par âge et sexe --------------------------------------
+    r.titre("⑥ Distribution par âge et sexe")
+    r.valeur("cohortes décrites",
+             f"{n('SELECT count() FROM gold_recherche.coh_description')} "
+             f"(pathologie × tranche d'âge × sexe)")
+    for tranche, cohortes, patients in lignes("""
+            SELECT tranche_age, count(), sum(nb_patients)
+            FROM gold_recherche.coh_description
+            GROUP BY tranche_age ORDER BY tranche_age"""):
+        r.valeur(f"tranche {tranche}", f"{cohortes:>3} cohortes   {GRIS}{patients} patients{RAZ}")
+    r.egal("aucune tranche d'âge non résolue",
+           n("""SELECT count() FROM gold_recherche.coh_description
+                WHERE tranche_age = 'inconnu'"""), 0)
+    r.egal("sexe restreint à la nomenclature",
+           n("""SELECT count() FROM gold_recherche.coh_description
+                WHERE sexe NOT IN ('M', 'F', 'inconnu')"""), 0)
+    # Un patient occupe une seule case (tranche × sexe) : la somme des cases
+    # d'une pathologie ne peut donc pas dépasser son effectif total. Elle est
+    # inférieure quand une case a été supprimée par le seuil des 5.
+    r.egal("la description ne peut pas compter plus de patients que la prévalence",
+           n("""SELECT count() FROM (
+                    SELECT d.code_cim10, sum(d.nb_patients) AS decrits,
+                           any(p.nb_patients) AS total
+                    FROM gold_recherche.coh_description AS d
+                    INNER JOIN gold_recherche.coh_prevalence AS p USING (code_cim10)
+                    GROUP BY d.code_cim10 HAVING decrits > total)"""), 0)
+    r.egal("aucune pathologie décrite hors de la prévalence",
+           n("""SELECT count() FROM gold_recherche.coh_description
+                WHERE code_cim10 NOT IN
+                      (SELECT code_cim10 FROM gold_recherche.coh_prevalence)"""), 0)
+
 
 # ── RGPD ─────────────────────────────────────────────────────────────────
 IDENTIFIANTS_DIRECTS = ("nir", "nom", "prenom", "birth_date", "patient_id")
@@ -172,7 +433,7 @@ BASES = ("bronze", "silver", "gold_pilotage", "gold_recherche", "ops")
 PERIMETRES = {
     "eds_pilotage": {"gold_pilotage"},
     "eds_recherche": {"gold_recherche"},
-    "eds_exploitation": {"bronze", "silver", "ops"},
+    "eds_exploitation": {"bronze", "silver", "ops", "quarantaine"},
 }
 
 
@@ -230,7 +491,7 @@ def rgpd(r: Rapport) -> None:
         ("silver.diagnostics", {"_jour_depot", "_fichier_source", "_built_at", "_run_id"}),
         ("silver.monitoring",  {"_jour_depot", "_fichier_source", "_built_at", "_run_id"}),
         ("silver.patients",    {"_jour_depot_retenu", "_fichier_source_retenu", "_built_at", "_run_id"}),
-        ("silver.rejets",      {"_jour_depot", "_fichier_source", "_rejected_at", "_run_id"}),
+        ("quarantaine.rejets", {"_jour_depot", "_fichier_source", "_rejected_at", "_run_id"}),
     ):
         base, nom = table.split(".")
         colonnes = {x[0] for x in ch.query(f"""
@@ -242,7 +503,7 @@ def rgpd(r: Rapport) -> None:
 
     # Une colonne déclarée ne suffit pas : elle doit être renseignée.
     for table, colonne in (("silver.sejours", "_fichier_source"),
-                           ("silver.rejets", "_fichier_source"),
+                           ("quarantaine.rejets", "_fichier_source"),
                            ("silver.patients", "_fichier_source_retenu")):
         vides = int(ch.command(f"SELECT countIf({colonne} = '') FROM {table}"))
         r.controle(f"{table}.{colonne} renseigné partout",
@@ -271,7 +532,8 @@ def rgpd(r: Rapport) -> None:
                not suspects, f"{len(suspects)} message(s) suspect(s)")
 
 
-SECTIONS = {"pseudonymisation": pseudonymisation, "qualite": qualite, "rgpd": rgpd}
+SECTIONS = {"pseudonymisation": pseudonymisation, "qualite": qualite,
+            "indicateurs": indicateurs, "rgpd": rgpd}
 
 
 def main(argv: list[str] | None = None) -> int:

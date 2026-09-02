@@ -1,4 +1,4 @@
-"""Point d'entrée du pipeline EDS — collecte, transformation, restitution.
+"""Point d'entrée du pipeline EDS — collecte et transformation.
 
     python -m eds.run                      # incrémental : les jours non encore ingérés
     python -m eds.run --jour 2026-08-27    # rejoue un jour précis
@@ -30,7 +30,7 @@ from datetime import date, datetime
 from clickhouse_connect.driver.exceptions import DatabaseError, OperationalError
 
 from eds import journal as mod_journal
-from eds.config import LAKE, exiger
+from eds.config import LAKE, exiger, seuils_alerte
 from eds.lake import copier_jour, jours_disponibles, lister_jours
 from eds.warehouse import (
     CHARGEURS,
@@ -48,6 +48,7 @@ LOG = logging.getLogger("eds.run")
 SCHEMA = (
     "00_databases.sql",
     "10_bronze.sql",
+    "15_quarantaine.sql",
     "20_silver.sql",
     "30_gold.sql",
     "60_ops.sql",
@@ -277,9 +278,14 @@ class Pipeline:
             )
 
         with self.etape("gold") as c:
+            # Les seuils d'alerte sont un paramètre d'exploitation, pas une
+            # constante du SQL : ils sont injectés comme le run_id.
             avec_reprises(
                 lambda: executer_fichier(
-                    self.ch, "31_gold_transform.sql", run_id=self.run_id
+                    self.ch,
+                    "31_gold_transform.sql",
+                    run_id=self.run_id,
+                    **seuils_alerte(),
                 ),
                 "gold",
             )
@@ -293,21 +299,6 @@ class Pipeline:
                     "gold_recherche.coh_description",
                 )
             )
-
-    def publier_restitution(self) -> None:
-        """Configure Metabase et publie les tableaux de bord.
-
-        Une indisponibilité de Metabase n'invalide pas l'entrepôt : l'étape
-        est journalisée en échec, mais le pipeline de données a déjà abouti.
-        La restitution se rattrape par `python -m eds.metabase`.
-        """
-        from eds.metabase import ErreurMetabase, installer
-
-        try:
-            with self.etape("restitution") as c:
-                c["lignes"] = len(installer())
-        except (ErreurMetabase, OSError) as erreur:
-            LOG.warning("restitution indisponible, entrepôt inchangé : %s", erreur)
 
     def appliquer_droits(self) -> None:
         with self.etape("droits") as c:
@@ -333,7 +324,6 @@ class Pipeline:
         self.ingerer_referentiels()
         self.transformer()
         self.appliquer_droits()
-        self.publier_restitution()
         LOG.info("terminé", extra={"run_id": self.run_id})
 
 
@@ -356,7 +346,7 @@ def afficher_etat() -> int:
     for table in (
         "bronze.sejours",
         "silver.sejours",
-        "silver.rejets",
+        "quarantaine.rejets",
         "gold_pilotage.fact_sejour",
         "gold_recherche.coh_prevalence",
     ):
@@ -381,7 +371,7 @@ def afficher_etat() -> int:
 def main(argv: list[str] | None = None) -> int:
     analyseur = argparse.ArgumentParser(
         prog="python -m eds.run",
-        description="Pipeline EDS CHU — collecte, transformation, restitution.",
+        description="Pipeline EDS CHU — collecte et transformation.",
     )
     groupe = analyseur.add_mutually_exclusive_group()
     groupe.add_argument(
