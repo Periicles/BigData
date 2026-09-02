@@ -26,11 +26,12 @@ source-filestorage/     dépôt du CHU, lecture seule (identités en clair)
         │  └──────────►  quarantaine     chaque ligne écartée, avec son motif
         ▼
    gold_pilotage                          gold_recherche
-   indicateurs agrégés                    agrégats · k ≥ 5
-   kpi_dms_service · kpi_urgences_jour    coh_prevalence
-   kpi_readmission_service                coh_description
-   kpi_alertes_jour
-     ╰─ dérivés du modèle en étoile
+   7 tables d'indicateurs                 agrégats · k ≥ 5
+   dms_service · urgences_jour            coh_prevalence
+   readmission_service · alertes_jour     coh_description
+   occupation_jour · mortalite_service
+   casemix_service
+     ╰─ dérivées du modèle en étoile
         fact_sejour · fact_diagnostic · fact_releve
         dim_patient · dim_service · dim_cim10
         │                                        │
@@ -131,7 +132,7 @@ compte, et aucun n'a plus de droits que son besoin.
 | Compte ClickHouse | Usage | Droits |
 |---|---|---|
 | `eds_admin` | le pipeline | tous — il crée les tables et applique les habilitations |
-| `eds_pilotage` | **Direction hospitalière** — piloter l'activité et la qualité des soins | `SELECT` sur les **4 tables d'indicateurs**, plus **16 colonnes** des faits — ni `patient_pseudo`, ni `stay_id` |
+| `eds_pilotage` | **Direction hospitalière** — piloter l'activité et la qualité des soins | `SELECT` sur les **7 tables d'indicateurs**, plus **16 colonnes** des faits — ni `patient_pseudo`, ni `stay_id` |
 | `eds_recherche` | **Recherche clinique** — décrire des cohortes | `SELECT` sur les colonnes des deux tables de cohortes |
 | `eds_exploitation` | **Investigation technique** — incident, piste d'audit, effacement | `SELECT` sur `bronze`, `silver`, `quarantaine`, `ops` — **lecture seule** |
 
@@ -194,7 +195,7 @@ des propriétés annoncées.
 # ou une section à la fois
 .venv/bin/python -m tests.verifier pseudonymisation   # aucune identité dans le lake
 .venv/bin/python -m tests.verifier qualite            # bronze = silver + quarantaine
-.venv/bin/python -m tests.verifier indicateurs        # les 6 indicateurs du sujet
+.venv/bin/python -m tests.verifier indicateurs        # les indicateurs du §4
 .venv/bin/python -m tests.verifier rgpd               # les 5 contraintes du sujet
 .venv/bin/python -m tests.demontrer cloisonnement     # droits d'accès disjoints
 .venv/bin/python -m tests.demontrer reprise           # erreurs et reprise sur incident
@@ -206,7 +207,7 @@ des propriétés annoncées.
 |---|---|
 | `verifier pseudonymisation` | Les 17 384 valeurs identifiantes de la source sont introuvables dans le lake ; aucune collision de pseudonyme ; les jointures survivent |
 | `verifier qualite` | Équation de conservation par source, déduplication, règles métier du §3, intégrité référentielle de silver **et** du modèle en étoile — 32 contrôles |
-| `verifier indicateurs` | Les six indicateurs du §4, calculés depuis gold : leur **valeur restituée** et la propriété qui la fonde — dénominateur de la DMS, inclusion numérateur/dénominateur de la réadmission, seuils d'alerte effectivement issus de la configuration, fidélité des agrégats de recherche — 18 contrôles |
+| `verifier indicateurs` | Les indicateurs du §4, calculés depuis gold : leur **valeur restituée** et la propriété qui la fonde — dénominateur de la DMS, inclusion numérateur/dénominateur de la réadmission, seuils d'alerte effectivement issus de la configuration, coïncidence de chaque table agrégée avec le fait dont elle sort — 39 contrôles |
 | `verifier rgpd` | Les cinq contraintes RGPD, vérifiées sur l'entrepôt réel : pseudonymisation, minimisation, cloisonnement, petits effectifs, traçabilité — plus l'absence de donnée personnelle dans les journaux |
 | `demontrer cloisonnement` | Chaque compte accède à sa base et se voit refuser les trois autres, par le moteur |
 | `demontrer reprise` | Erreurs détectées, tracées, entrepôt cohérent, reprise par simple relance |

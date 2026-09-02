@@ -18,9 +18,11 @@ Deux publics, aux besoins opposés :
 | **Direction hospitalière** | Piloter l'activité et la qualité des soins | Fine, par service et par jour |
 | **Recherche clinique**     | Décrire des cohortes de patients           | Agrégée, jamais individuelle  |
 
-Six indicateurs sont demandés : durée moyenne de séjour par service, passages
+Six indicateurs sont nommés : durée moyenne de séjour par service, passages
 aux urgences par jour, taux de réadmission à 30 jours, relevés de constantes en
-alerte, prévalence par pathologie, distribution par âge et sexe.
+alerte, prévalence par pathologie, distribution par âge et sexe. Le § 4 ajoute
+une septième ligne, ouverte — « toute autre vue d'activité pertinente » — que
+trois vues complémentaires remplissent : occupation, mortalité, case-mix.
 
 Les six se calculent depuis la couche gold, et `tests.verifier indicateurs` les
 restitue à chaque exécution — la valeur obtenue **et** la propriété qui la
@@ -202,7 +204,7 @@ Nous avons donc fait les deux, dans cet ordre de dérivation :
 
 | Niveau | Contenu | Pour qui |
 | --- | --- | --- |
-| **Indicateurs agrégés** | `kpi_dms_service`, `kpi_urgences_jour`, `kpi_readmission_service`, `kpi_alertes_jour` | La lecture courante — un indicateur, une table, aucune jointure |
+| **Indicateurs agrégés** | 7 tables `kpi_*` : DMS, urgences, réadmission, alertes, occupation, mortalité, case-mix | La lecture courante — un indicateur, une table, aucune jointure |
 | **Modèle en étoile** | 3 faits, 3 dimensions conformes | L'analyse qu'aucune table figée ne couvre |
 
 Les quatre tables d'indicateurs sont **dérivées des faits**, jamais de silver.
@@ -497,12 +499,15 @@ exactement les volumes de silver. La transformation est structurelle.
 
 Puis, **dérivés de ces faits**, les quatre indicateurs agrégés du pilotage :
 
-| Table | Grain | Lignes |
-| --- | --- | --- |
-| `kpi_dms_service` | service × mois | 8 |
-| `kpi_urgences_jour` | jour d'admission | 28 |
-| `kpi_readmission_service` | service | 8 |
-| `kpi_alertes_jour` | jour de mesure × service | 59 |
+| Table | Grain | Lignes | Répond à |
+| --- | --- | --- | --- |
+| `kpi_dms_service` | service × mois | 8 | DMS — avec médiane, P90 et max |
+| `kpi_urgences_jour` | jour d'admission | 28 | activité des urgences |
+| `kpi_readmission_service` | service | 8 | réadmission à 30 jours |
+| `kpi_alertes_jour` | jour de mesure × service | 59 | relevés en alerte |
+| `kpi_occupation_jour` | jour × service | 224 | « autre vue d'activité » |
+| `kpi_mortalite_service` | service | 8 | idem |
+| `kpi_casemix_service` | service × pathologie | 32 | idem |
 
 Aucune information n'y est créée : ce sont des `GROUP BY` sur les faits, et
 l'égalité est vérifiée table par table. Chacune expose son effectif à côté de
@@ -548,6 +553,30 @@ contrôle échoue avant qu'il ne soit diffusé.
 | **Relevés en alerte** | 2 453 sur 40 400 (6,1 %) — FC 274 · SpO2 1 108 · T° 1 071 | `en_alerte` est bien la réunion des trois motifs ; **les drapeaux sont recalculés depuis `eds/config.py`** et doivent coïncider — ce qui prouve que le seuil configuré est celui qui a servi, et non une constante figée dans le SQL |
 | **Prévalence par pathologie** | 11 pathologies, de 8 à 847 patients | L'agrégat reproduit exactement le recalcul depuis `fact_diagnostic` filtré sur le diagnostic principal ; `nb_sejours >= nb_patients` ; toute pathologie restituée existe dans la nomenclature |
 | **Distribution âge × sexe** | 89 cohortes, tranches 0-9 à 90-99 | Aucune tranche `inconnu` ; sexe borné à la nomenclature ; la somme des cases d'une pathologie ne dépasse pas son effectif de prévalence ; aucune pathologie décrite hors prévalence |
+
+**Les trois vues du cinquième point.** Le § 4 laisse une ligne ouverte après
+les quatre indicateurs nommés. Trois vues la remplissent, chacune répondant à
+une question qu'aucune des quatre ne pose :
+
+| Vue | Valeur sur le dépôt courant | Ce qui est vérifié en même temps |
+| --- | --- | --- |
+| **Occupation** | Cardiologie 352 présents en moyenne, pic à 473 ; 28 jours couverts | Chaque séjour compte une admission et une seule ; les sorties observées correspondent aux séjours clos dans la fenêtre ; jamais moins de présents que d'admis ; la série ne déborde pas la fenêtre d'observation |
+| **Mortalité** | Pédiatrie 19,64 %, réanimation 18,2 % — **chiffres non interprétables**, voir ci-dessous | Le dénominateur est restreint aux séjours **clos** ; la table coïncide avec le fait |
+| **Case-mix** | Pneumologie : 68,9 % de pneumopathies ; Urgences : 56,6 % d'infections urinaires | Les parts d'un même service somment à 100 % ; la table couvre tous les diagnostics principaux |
+
+**La mortalité est publiée mais ne doit pas être lue.** Sur les données
+fournies, les modes de sortie sont uniformément distribués : il en résulte
+19,6 % de décès en pédiatrie, ce qu'aucun établissement réel ne présenterait.
+L'indicateur est juste — il coïncide avec le fait, son dénominateur est le bon
+— mais la donnée qui l'alimente ne l'est pas. Il figure pour la complétude de
+la vue métier, avec cette réserve attachée. C'est précisément le cas où
+« justifier chaque chiffre » consiste à dire qu'un chiffre ne vaut rien.
+
+**La dispersion des durées corrige un angle mort.** `kpi_dms_service` porte
+désormais médiane, P90 et maximum à côté de la moyenne. En réanimation :
+moyenne 9,05 jours, médiane 8,21, **P90 à 18,03**. Publier la seule moyenne
+masquait la moitié de l'écart entre un séjour ordinaire et un séjour long —
+soit exactement ce qu'un service qui pilote ses lits a besoin de voir.
 
 **Chaque indicateur du pilotage existe en deux exemplaires**, et c'est
 délibéré : la table agrégée, qui est le chemin de lecture, et le fait, qui

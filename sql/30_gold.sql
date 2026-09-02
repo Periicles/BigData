@@ -236,6 +236,13 @@ CREATE TABLE IF NOT EXISTS gold_pilotage.kpi_dms_service
     service          String,
     mois             Date,                -- premier jour du mois
     dms_jours        Float64,
+    -- La MOYENNE SEULE MASQUE LA QUEUE. En réanimation, moyenne 9,05 mais
+    -- P90 à 18,03 : la moitié de l'écart entre un séjour ordinaire et un
+    -- séjour long est invisible si l'on ne publie que la DMS. Un service
+    -- qui pilote ses lits a besoin des trois.
+    mediane_jours    Float64,
+    p90_jours        Float64,
+    max_jours        Float64,
     nb_sejours_clos  UInt32,
     _run_id          String,
     _built_at        DateTime
@@ -283,3 +290,72 @@ CREATE TABLE IF NOT EXISTS gold_pilotage.kpi_alertes_jour
     _built_at        DateTime
 )
 ENGINE = MergeTree ORDER BY (jour, service_code);
+
+
+-- ── « Toute autre vue d'activité pertinente » (§ 4) ──────────────────────
+--
+-- Le sujet nomme quatre indicateurs de pilotage puis laisse une cinquième
+-- ligne ouverte. Trois vues la remplissent, chacune répondant à une question
+-- qu'aucune des quatre premières ne couvre.
+
+-- OCCUPATION — combien de patients sont présents, un jour donné, dans un
+-- service. C'est la vue que regarde une direction en premier, et la seule
+-- qui croise le FLUX (admissions) et la DURÉE : à activité égale, un service
+-- dont la DMS double occupe deux fois plus de lits.
+--
+-- Un séjour est déroulé sur tout son intervalle : il compte présent chaque
+-- jour entre son admission et sa sortie. La série s'arrête au dernier jour
+-- de dépôt — au-delà, seuls les séjours déjà admis subsisteraient, et la
+-- courbe descendrait pour une raison qui n'a rien de métier.
+CREATE TABLE IF NOT EXISTS gold_pilotage.kpi_occupation_jour
+(
+    jour             Date,
+    service_code     LowCardinality(String),
+    service          String,
+    nb_presents      UInt32,
+    nb_admissions    UInt32,
+    nb_sorties       UInt32,
+    _run_id          String,
+    _built_at        DateTime
+)
+ENGINE = MergeTree ORDER BY (jour, service_code);
+
+-- MORTALITÉ HOSPITALIÈRE — le pendant de la réadmission. Le sujet range
+-- celle-ci sous « qualité des soins » ; la mortalité en est l'autre moitié,
+-- et elle se lit sur `discharge_mode`.
+--
+-- RÉSERVE À ÉNONCER AVEC LE CHIFFRE : sur les données fournies, les modes de
+-- sortie sont uniformément distribués, ce qui produit des taux sans aucune
+-- plausibilité clinique (19,6 % en pédiatrie). L'indicateur est correct, la
+-- donnée qui l'alimente ne l'est pas. Il est publié pour la complétude de la
+-- vue métier, jamais pour être interprété tel quel.
+CREATE TABLE IF NOT EXISTS gold_pilotage.kpi_mortalite_service
+(
+    service_code     LowCardinality(String),
+    service          String,
+    nb_sejours_clos  UInt32,
+    nb_deces         UInt32,
+    taux_pct         Float64,
+    _run_id          String,
+    _built_at        DateTime
+)
+ENGINE = MergeTree ORDER BY (service_code);
+
+-- CASE-MIX — de quoi un service soigne-t-il ses patients. Répond à une
+-- question que ni la DMS ni l'occupation ne posent : deux services de même
+-- activité et de même durée peuvent traiter des pathologies sans rapport.
+--
+-- Au grain du diagnostic PRINCIPAL, comme les cohortes de recherche : c'est
+-- le motif d'hospitalisation, pas la comorbidité.
+CREATE TABLE IF NOT EXISTS gold_pilotage.kpi_casemix_service
+(
+    service_code     LowCardinality(String),
+    service          String,
+    code_cim10       LowCardinality(String),
+    pathologie       String,
+    nb_sejours       UInt32,
+    part_pct         Float64,             -- part dans l'activité du service
+    _run_id          String,
+    _built_at        DateTime
+)
+ENGINE = MergeTree ORDER BY (service_code, code_cim10);

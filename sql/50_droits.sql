@@ -56,6 +56,9 @@ GRANT SELECT ON gold_pilotage.kpi_dms_service          TO eds_pilotage;
 GRANT SELECT ON gold_pilotage.kpi_urgences_jour        TO eds_pilotage;
 GRANT SELECT ON gold_pilotage.kpi_readmission_service  TO eds_pilotage;
 GRANT SELECT ON gold_pilotage.kpi_alertes_jour         TO eds_pilotage;
+GRANT SELECT ON gold_pilotage.kpi_occupation_jour      TO eds_pilotage;
+GRANT SELECT ON gold_pilotage.kpi_mortalite_service    TO eds_pilotage;
+GRANT SELECT ON gold_pilotage.kpi_casemix_service      TO eds_pilotage;
 
 GRANT SELECT(service_code, service) ON gold_pilotage.dim_service TO eds_pilotage;
 

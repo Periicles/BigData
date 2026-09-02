@@ -5,7 +5,7 @@
   qualite           équation de conservation bronze = silver + quarantaine,
                     règles métier du sujet, intégrité référentielle de
                     silver ET du modèle en étoile
-  indicateurs       les six indicateurs du § 4, calculés depuis gold : leur
+  indicateurs       les indicateurs du § 4, calculés depuis gold : leur
                     valeur restituée, et la propriété qui la fonde
   rgpd              les cinq contraintes du § 5, vérifiées sur l'entrepôt réel,
                     plus l'absence de donnée personnelle dans les journaux
@@ -297,6 +297,21 @@ COHERENCE_KPI = {
            FROM gold_pilotage.fact_releve GROUP BY jour, service_code""",
         ("jour", "service_code"),
     ),
+    "kpi_mortalite_service": (
+        "service_code, nb_deces AS mesure, nb_sejours_clos AS effectif",
+        """SELECT service_code, countIf(discharge_mode = 'deces') AS mesure,
+                  count() AS effectif
+           FROM gold_pilotage.fact_sejour WHERE est_en_cours = 0
+           GROUP BY service_code""",
+        ("service_code",),
+    ),
+    "kpi_casemix_service": (
+        "service_code, code_cim10, nb_sejours AS mesure, nb_sejours AS effectif",
+        """SELECT service_code, code_cim10, count() AS mesure, count() AS effectif
+           FROM gold_pilotage.fact_diagnostic WHERE est_principal = 1
+           GROUP BY service_code, code_cim10""",
+        ("service_code", "code_cim10"),
+    ),
 }
 
 
@@ -322,7 +337,11 @@ def _coherence_kpi(r: Rapport, table: str) -> None:
 
 
 def indicateurs(r: Rapport) -> None:
-    """Les six indicateurs du §4, calculés depuis gold et affichés.
+    """Les indicateurs du §4, calculés depuis gold et affichés.
+
+    Les quatre indicateurs nommés du pilotage, les deux de la recherche, et
+    les trois vues qui remplissent la cinquième ligne — « toute autre vue
+    d'activité pertinente ».
 
     Un indicateur juste par construction ne prouve rien : chaque bloc montre
     la valeur restituée ET la propriété qui la fonde. Si la propriété tombe,
@@ -365,6 +384,13 @@ def indicateurs(r: Rapport) -> None:
            n("""SELECT count() FROM gold_pilotage.fact_sejour
                 WHERE est_en_cours = 0 AND duree_jours IS NULL"""), 0)
     _coherence_kpi(r, "kpi_dms_service")
+    # La dispersion n'a pas de valeur « attendue » à comparer : ce qui se
+    # vérifie, c'est l'ordre. Une médiane au-dessus du P90, ou un P90
+    # au-dessus du maximum, signalerait un quantile calculé sur le mauvais
+    # sous-ensemble — l'erreur passerait inaperçue à l'œil.
+    r.egal("dispersion ordonnée : médiane <= P90 <= max",
+           n("""SELECT count() FROM gold_pilotage.kpi_dms_service
+                WHERE NOT (mediane_jours <= p90_jours AND p90_jours <= max_jours)"""), 0)
 
     # ② Passages aux urgences par jour ------------------------------------
     r.titre("② Passages aux urgences, par jour")
@@ -488,6 +514,70 @@ def indicateurs(r: Rapport) -> None:
            n("""SELECT count() FROM gold_recherche.coh_description
                 WHERE code_cim10 NOT IN
                       (SELECT code_cim10 FROM gold_recherche.coh_prevalence)"""), 0)
+
+    # ⑦ Occupation ---------------------------------------------------------
+    # « Toute autre vue d'activité pertinente » (§4). Celle-ci croise le flux
+    # et la durée : à activité égale, un service dont la DMS double occupe
+    # deux fois plus de lits.
+    r.titre("⑦ Occupation — patients présents par jour et par service")
+    debut, fin = lignes("SELECT min(jour), max(jour) FROM gold_pilotage.kpi_occupation_jour")[0]
+    r.valeur("période couverte", f"{debut} -> {fin}")
+    for service, moyenne, pic in lignes("""
+            SELECT service, round(avg(nb_presents)), max(nb_presents)
+            FROM gold_pilotage.kpi_occupation_jour
+            GROUP BY service ORDER BY 2 DESC LIMIT 4"""):
+        r.valeur(f"{service}", f"{moyenne:>5.0f} présents en moyenne   {GRIS}pic à {pic}{RAZ}")
+    # Chaque séjour est admis une fois et une seule : dérouler l'intervalle
+    # ne doit pas créer d'admission. Sans ce contrôle, un décalage de borne
+    # dans `range()` se verrait seulement sur la courbe.
+    r.egal("chaque séjour compté une fois et une seule à l'admission",
+           n("SELECT sum(nb_admissions) FROM gold_pilotage.kpi_occupation_jour"),
+           n("SELECT count() FROM gold_pilotage.fact_sejour"))
+    r.egal("les sorties observées correspondent aux séjours clos dans la fenêtre",
+           n("SELECT sum(nb_sorties) FROM gold_pilotage.kpi_occupation_jour"),
+           n("""SELECT count() FROM gold_pilotage.fact_sejour
+                WHERE est_en_cours = 0 AND date_sortie <=
+                      (SELECT max(date_admission) FROM gold_pilotage.fact_sejour)"""))
+    r.egal("jamais moins de présents que d'admis le même jour",
+           n("""SELECT count() FROM gold_pilotage.kpi_occupation_jour
+                WHERE nb_presents < nb_admissions"""), 0)
+    # La série s'arrête au dernier jour de dépôt : au-delà, seuls les séjours
+    # déjà admis subsisteraient et la courbe descendrait sans raison métier.
+    r.egal("la série ne déborde pas la fenêtre d'observation",
+           n("""SELECT count() FROM gold_pilotage.kpi_occupation_jour
+                WHERE jour > (SELECT max(date_admission) FROM gold_pilotage.fact_sejour)"""), 0)
+
+    # ⑧ Mortalité ----------------------------------------------------------
+    r.titre("⑧ Mortalité hospitalière par service")
+    for service, clos, deces, taux in lignes("""
+            SELECT service, nb_sejours_clos, nb_deces, taux_pct
+            FROM gold_pilotage.kpi_mortalite_service ORDER BY taux_pct DESC LIMIT 4"""):
+        r.valeur(f"{service}", f"{taux:>5} %   {GRIS}{deces} décès sur {clos} séjours clos{RAZ}")
+    _coherence_kpi(r, "kpi_mortalite_service")
+    # Un séjour en cours n'a pas d'issue connue : le compter au dénominateur
+    # reviendrait à le supposer vivant, et minorerait le taux d'autant.
+    r.egal("dénominateur restreint aux séjours clos",
+           n("SELECT sum(nb_sejours_clos) FROM gold_pilotage.kpi_mortalite_service"),
+           n("SELECT countIf(est_en_cours = 0) FROM gold_pilotage.fact_sejour"))
+
+    # ⑨ Case-mix -----------------------------------------------------------
+    r.titre("⑨ Case-mix — pathologies principales par service")
+    for service, pathologie, nb, part in lignes("""
+            SELECT service, pathologie, nb_sejours, part_pct
+            FROM gold_pilotage.kpi_casemix_service ORDER BY nb_sejours DESC LIMIT 4"""):
+        r.valeur(f"{service} · {pathologie[:34]}", f"{part:>5} %   {GRIS}{nb} séjours{RAZ}")
+    _coherence_kpi(r, "kpi_casemix_service")
+    # La part est calculée SUR LE SERVICE : les parts d'un même service
+    # somment à 100. Si elles sommaient à autre chose, le dénominateur de la
+    # fenêtre analytique serait faux et chaque part serait fausse avec lui.
+    r.egal("les parts d'un service somment à 100 %",
+           n("""SELECT count() FROM (
+                    SELECT service_code, round(sum(part_pct)) AS total
+                    FROM gold_pilotage.kpi_casemix_service
+                    GROUP BY service_code HAVING total != 100)"""), 0)
+    r.egal("le case-mix couvre tous les séjours au diagnostic principal",
+           n("SELECT sum(nb_sejours) FROM gold_pilotage.kpi_casemix_service"),
+           n("""SELECT countIf(est_principal = 1) FROM gold_pilotage.fact_diagnostic"""))
 
 
 # ── RGPD ─────────────────────────────────────────────────────────────────

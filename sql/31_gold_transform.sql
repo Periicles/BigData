@@ -205,6 +205,9 @@ INSERT INTO gold_pilotage.kpi_dms_service
 SELECT f.service_code, s.service,
        toStartOfMonth(f.date_admission) AS mois,
        round(avg(f.duree_jours), 2),
+       round(median(f.duree_jours), 2),
+       round(quantile(0.9)(f.duree_jours), 2),
+       round(max(f.duree_jours), 2),
        count(),
        '{run_id}', now()
 FROM gold_pilotage.fact_sejour AS f
@@ -245,3 +248,65 @@ SELECT f.date_mesure, f.service_code, s.service,
 FROM gold_pilotage.fact_releve AS f
 INNER JOIN gold_pilotage.dim_service AS s ON f.service_code = s.service_code
 GROUP BY f.date_mesure, f.service_code, s.service;
+
+
+-- ── Les trois vues d'activité du cinquième point du § 4 ─────────────────
+
+TRUNCATE TABLE gold_pilotage.kpi_occupation_jour;
+
+-- Un séjour est déroulé sur son intervalle : `range()` produit un jour par
+-- journée d'hospitalisation, `arrayJoin` les transforme en lignes. Les
+-- séjours en cours courent jusqu'au dernier jour de dépôt — au-delà, on
+-- n'observe plus rien, et prolonger la courbe donnerait une décroissance
+-- purement documentaire.
+INSERT INTO gold_pilotage.kpi_occupation_jour
+SELECT j, f.service_code, s.service,
+       count()                                  AS nb_presents,
+       countIf(toDate(f.admission_ts) = j)      AS nb_admissions,
+       countIf(f.date_sortie = j)               AS nb_sorties,
+       '{run_id}', now()
+FROM (
+    SELECT service_code, admission_ts, date_sortie,
+           toDate(arrayJoin(range(
+               toUInt32(toDate(admission_ts)),
+               toUInt32(coalesce(date_sortie, (SELECT max(date_admission)
+                                               FROM gold_pilotage.fact_sejour))) + 1
+           ))) AS j
+    FROM gold_pilotage.fact_sejour
+) AS f
+INNER JOIN gold_pilotage.dim_service AS s ON f.service_code = s.service_code
+WHERE j <= (SELECT max(date_admission) FROM gold_pilotage.fact_sejour)
+GROUP BY j, f.service_code, s.service;
+
+TRUNCATE TABLE gold_pilotage.kpi_mortalite_service;
+
+-- Dénominateur : les séjours CLOS. Un séjour en cours n'a pas d'issue
+-- connue ; le compter reviendrait à le supposer vivant, ce qui minore le
+-- taux d'autant.
+INSERT INTO gold_pilotage.kpi_mortalite_service
+SELECT f.service_code, s.service,
+       count()                                   AS nb_clos,
+       countIf(f.discharge_mode = 'deces')       AS nb_deces,
+       if(nb_clos = 0, 0, round(100 * nb_deces / nb_clos, 2)),
+       '{run_id}', now()
+FROM gold_pilotage.fact_sejour AS f
+INNER JOIN gold_pilotage.dim_service AS s ON f.service_code = s.service_code
+WHERE f.est_en_cours = 0
+GROUP BY f.service_code, s.service;
+
+TRUNCATE TABLE gold_pilotage.kpi_casemix_service;
+
+-- La part est calculée SUR LE SERVICE, pas sur l'hôpital : la question est
+-- « de quoi ce service soigne-t-il ses patients », pas « quel poids ce
+-- service a-t-il dans l'activité totale ». Les parts d'un même service
+-- somment donc à 100.
+INSERT INTO gold_pilotage.kpi_casemix_service
+SELECT d.service_code, s.service, d.code_cim10, c.pathologie,
+       count() AS nb,
+       round(100 * nb / sum(nb) OVER (PARTITION BY d.service_code), 2),
+       '{run_id}', now()
+FROM gold_pilotage.fact_diagnostic AS d
+INNER JOIN gold_pilotage.dim_service AS s ON d.service_code = s.service_code
+INNER JOIN gold_pilotage.dim_cim10   AS c ON d.code_cim10   = c.code_cim10
+WHERE d.est_principal = 1
+GROUP BY d.service_code, s.service, d.code_cim10, c.pathologie;
