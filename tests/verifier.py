@@ -262,6 +262,65 @@ def qualite(r: Rapport) -> None:
 
 
 # ── Indicateurs ──────────────────────────────────────────────────────────
+# Une table d'indicateur agrégé est une COPIE dérivée du fait. Elle peut donc
+# diverger : un TRUNCATE oublié, un filtre qui change d'un côté seulement, et
+# la table continue de servir un chiffre que plus rien ne fonde. Chaque table
+# est donc confrontée à son recalcul depuis les faits — même clé, même valeur,
+# même nombre de lignes.
+COHERENCE_KPI = {
+    "kpi_dms_service": (
+        "service_code, mois, dms_jours AS mesure, nb_sejours_clos AS effectif",
+        """SELECT service_code, toStartOfMonth(date_admission) AS mois,
+                  round(avg(duree_jours), 2) AS mesure, count() AS effectif
+           FROM gold_pilotage.fact_sejour WHERE est_en_cours = 0
+           GROUP BY service_code, mois""",
+        ("service_code", "mois"),
+    ),
+    "kpi_urgences_jour": (
+        "jour, nb_passages AS mesure, nb_sejours AS effectif",
+        """SELECT date_admission AS jour, countIf(est_urgence) AS mesure,
+                  count() AS effectif
+           FROM gold_pilotage.fact_sejour GROUP BY jour""",
+        ("jour",),
+    ),
+    "kpi_readmission_service": (
+        "service_code, nb_readmis_30j AS mesure, nb_sejours_index AS effectif",
+        """SELECT service_code, sum(suivi_readmission_30j) AS mesure,
+                  sum(est_sejour_index) AS effectif
+           FROM gold_pilotage.fact_sejour GROUP BY service_code""",
+        ("service_code",),
+    ),
+    "kpi_alertes_jour": (
+        "jour, service_code, nb_en_alerte AS mesure, nb_releves AS effectif",
+        """SELECT date_mesure AS jour, service_code,
+                  countIf(en_alerte) AS mesure, count() AS effectif
+           FROM gold_pilotage.fact_releve GROUP BY jour, service_code""",
+        ("jour", "service_code"),
+    ),
+}
+
+
+def _coherence_kpi(r: Rapport, table: str) -> None:
+    """Confronte une table d'indicateur au recalcul depuis les faits."""
+    ch = client()
+    n = lambda requete: int(ch.command(requete))
+    colonnes, recalcul, cles = COHERENCE_KPI[table]
+    jointure = ", ".join(cles)
+
+    # Deux contrôles, et il en faut deux : des cardinalités égales avec des
+    # valeurs fausses passeraient le premier, des valeurs justes sur un sous-
+    # ensemble passeraient le second.
+    r.egal(f"{table} : autant de lignes que d'agrégats de faits",
+           n(f"SELECT count() FROM gold_pilotage.{table}"),
+           n(f"SELECT count() FROM ({recalcul})"))
+    r.egal(f"{table} : aucune valeur qui diverge du fait",
+           n(f"""SELECT count() FROM (SELECT {colonnes}
+                                      FROM gold_pilotage.{table}) AS k
+                 INNER JOIN ({recalcul}) AS f USING ({jointure})
+                 WHERE abs(k.mesure - f.mesure) > 0.005
+                    OR k.effectif != f.effectif"""), 0)
+
+
 def indicateurs(r: Rapport) -> None:
     """Les six indicateurs du §4, calculés depuis gold et affichés.
 
@@ -305,6 +364,7 @@ def indicateurs(r: Rapport) -> None:
     r.egal("aucune durée manquante sur un séjour clos",
            n("""SELECT count() FROM gold_pilotage.fact_sejour
                 WHERE est_en_cours = 0 AND duree_jours IS NULL"""), 0)
+    _coherence_kpi(r, "kpi_dms_service")
 
     # ② Passages aux urgences par jour ------------------------------------
     r.titre("② Passages aux urgences, par jour")
@@ -322,6 +382,7 @@ def indicateurs(r: Rapport) -> None:
     r.egal("est_urgence ne qualifie que les admissions en urgence",
            n("""SELECT count() FROM gold_pilotage.fact_sejour
                 WHERE est_urgence != (admission_mode = 'urgence')"""), 0)
+    _coherence_kpi(r, "kpi_urgences_jour")
 
     # ③ Taux de réadmission à 30 jours ------------------------------------
     # Numérateur et dénominateur sont posés dans le fait, pas laissés au
@@ -346,6 +407,7 @@ def indicateurs(r: Rapport) -> None:
     r.egal("aucun séjour en cours dans le dénominateur",
            n("""SELECT count() FROM gold_pilotage.fact_sejour
                 WHERE est_sejour_index = 1 AND est_en_cours = 1"""), 0)
+    _coherence_kpi(r, "kpi_readmission_service")
 
     # ④ Relevés en alerte -------------------------------------------------
     r.titre("④ Relevés de constantes en alerte")
@@ -371,6 +433,7 @@ def indicateurs(r: Rapport) -> None:
                                   OR heart_rate > {seuils['fc_haute']}
                                   OR spo2 < {seuils['spo2_basse']}
                                   OR temp_c > {seuils['temp_haute']})"""), 0)
+    _coherence_kpi(r, "kpi_alertes_jour")
 
     # ⑤ Prévalence par pathologie -----------------------------------------
     # L'indicateur compte le MOTIF d'hospitalisation, pas la pathologie dans

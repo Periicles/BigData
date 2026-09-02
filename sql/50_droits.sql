@@ -43,6 +43,20 @@ GRANT SELECT(
     alerte_fc, alerte_spo2, alerte_temp, en_alerte
 ) ON gold_pilotage.fact_releve TO eds_pilotage;
 
+-- ── Les indicateurs agrégés : accordés en entier ────────────────────────
+--
+-- Ces quatre tables ne portent NI pseudonyme, NI stay_id, NI horodatage
+-- précis — rien qui désigne un patient ou un séjour. Le découpage colonne
+-- par colonne n'a donc pas d'objet ici : il n'y a aucune colonne à retenir.
+--
+-- C'est le chemin de lecture normal du pilotage. L'accès au grain de
+-- l'événement ci-dessus subsiste pour les analyses qu'aucune table figée ne
+-- couvre — croiser la DMS par service ET par tranche d'âge, par exemple.
+GRANT SELECT ON gold_pilotage.kpi_dms_service          TO eds_pilotage;
+GRANT SELECT ON gold_pilotage.kpi_urgences_jour        TO eds_pilotage;
+GRANT SELECT ON gold_pilotage.kpi_readmission_service  TO eds_pilotage;
+GRANT SELECT ON gold_pilotage.kpi_alertes_jour         TO eds_pilotage;
+
 GRANT SELECT(service_code, service) ON gold_pilotage.dim_service TO eds_pilotage;
 
 -- ── Compte recherche ────────────────────────────────────────────────────

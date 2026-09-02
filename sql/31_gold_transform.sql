@@ -191,3 +191,57 @@ INNER JOIN gold_pilotage.dim_cim10 AS c ON f.code_cim10 = c.code_cim10
 WHERE f.est_principal = 1 AND f.tranche_age != 'inconnu'
 GROUP BY f.code_cim10, c.pathologie, f.tranche_age, f.sexe
 HAVING nb_patients >= 5;
+
+
+-- ══ PILOTAGE — INDICATEURS AGRÉGÉS ══════════════════════════════════════
+-- Dérivés des FAITS, jamais de silver : un indicateur et le fait dont il
+-- sort doivent donner le même chiffre par construction, sinon les deux
+-- divergent silencieusement. `tests.verifier indicateurs` compare d'ailleurs
+-- chaque table à son recalcul depuis les faits.
+
+TRUNCATE TABLE gold_pilotage.kpi_dms_service;
+
+INSERT INTO gold_pilotage.kpi_dms_service
+SELECT f.service_code, s.service,
+       toStartOfMonth(f.date_admission) AS mois,
+       round(avg(f.duree_jours), 2),
+       count(),
+       '{run_id}', now()
+FROM gold_pilotage.fact_sejour AS f
+INNER JOIN gold_pilotage.dim_service AS s ON f.service_code = s.service_code
+WHERE f.est_en_cours = 0
+GROUP BY f.service_code, s.service, mois;
+
+TRUNCATE TABLE gold_pilotage.kpi_urgences_jour;
+
+INSERT INTO gold_pilotage.kpi_urgences_jour
+SELECT date_admission, countIf(est_urgence), count(), '{run_id}', now()
+FROM gold_pilotage.fact_sejour
+GROUP BY date_admission;
+
+TRUNCATE TABLE gold_pilotage.kpi_readmission_service;
+
+-- Le taux vaut 0 quand aucun séjour index n'existe pour le service : le
+-- ratio serait indéfini, et laisser la ligne absente ferait disparaître le
+-- service du tableau au lieu de dire « pas encore mesurable ».
+INSERT INTO gold_pilotage.kpi_readmission_service
+SELECT f.service_code, s.service,
+       sum(f.est_sejour_index)      AS nb_index,
+       sum(f.suivi_readmission_30j) AS nb_readmis,
+       if(nb_index = 0, 0, round(100 * nb_readmis / nb_index, 2)),
+       '{run_id}', now()
+FROM gold_pilotage.fact_sejour AS f
+INNER JOIN gold_pilotage.dim_service AS s ON f.service_code = s.service_code
+GROUP BY f.service_code, s.service;
+
+TRUNCATE TABLE gold_pilotage.kpi_alertes_jour;
+
+INSERT INTO gold_pilotage.kpi_alertes_jour
+SELECT f.date_mesure, f.service_code, s.service,
+       count()             AS nb_releves,
+       countIf(f.en_alerte) AS nb_alertes,
+       round(100 * nb_alertes / nb_releves, 2),
+       '{run_id}', now()
+FROM gold_pilotage.fact_releve AS f
+INNER JOIN gold_pilotage.dim_service AS s ON f.service_code = s.service_code
+GROUP BY f.date_mesure, f.service_code, s.service;

@@ -26,10 +26,13 @@ source-filestorage/     dépôt du CHU, lecture seule (identités en clair)
         │  └──────────►  quarantaine     chaque ligne écartée, avec son motif
         ▼
    gold_pilotage                          gold_recherche
-   modèle en étoile                       agrégats · k ≥ 5
-   fact_sejour · fact_diagnostic          coh_prevalence
-   fact_releve                            coh_description
-   dim_patient · dim_service · dim_cim10
+   indicateurs agrégés                    agrégats · k ≥ 5
+   kpi_dms_service · kpi_urgences_jour    coh_prevalence
+   kpi_readmission_service                coh_description
+   kpi_alertes_jour
+     ╰─ dérivés du modèle en étoile
+        fact_sejour · fact_diagnostic · fact_releve
+        dim_patient · dim_service · dim_cim10
         │                                        │
         └──── deux bases, deux comptes, droits disjoints ────┘
              le refus est prononcé par le moteur, pas par l'applicatif
@@ -128,7 +131,7 @@ compte, et aucun n'a plus de droits que son besoin.
 | Compte ClickHouse | Usage | Droits |
 |---|---|---|
 | `eds_admin` | le pipeline | tous — il crée les tables et applique les habilitations |
-| `eds_pilotage` | **Direction hospitalière** — piloter l'activité et la qualité des soins | `SELECT` **sur 16 colonnes** de `gold_pilotage` — ni `patient_pseudo`, ni `stay_id` |
+| `eds_pilotage` | **Direction hospitalière** — piloter l'activité et la qualité des soins | `SELECT` sur les **4 tables d'indicateurs**, plus **16 colonnes** des faits — ni `patient_pseudo`, ni `stay_id` |
 | `eds_recherche` | **Recherche clinique** — décrire des cohortes | `SELECT` sur les colonnes des deux tables de cohortes |
 | `eds_exploitation` | **Investigation technique** — incident, piste d'audit, effacement | `SELECT` sur `bronze`, `silver`, `quarantaine`, `ops` — **lecture seule** |
 
@@ -306,8 +309,8 @@ sql/                     toute la transformation, versionnée
   15_quarantaine.sql     registre des lignes écartées ou corrigées
   20_silver.sql          tables nettoyées, dédupliquées, enrichies
   21_silver_transform.sql  les règles qualité — le cœur métier
-  30_gold.sql            modèle en étoile, deux bases séparées
-  31_gold_transform.sql  dimensions puis faits, et les six indicateurs
+  30_gold.sql            étoile + tables d'indicateurs, deux bases séparées
+  31_gold_transform.sql  dimensions, faits, puis les indicateurs agrégés
   50_droits.sql          comptes et droits — le cloisonnement
   60_ops.sql             journal d'exécution
   99_verifications.sql   requêtes d'inspection pour la console SQL

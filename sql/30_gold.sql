@@ -205,3 +205,81 @@ CREATE TABLE IF NOT EXISTS gold_recherche.coh_description
     _built_at        DateTime
 )
 ENGINE = MergeTree ORDER BY (code_cim10, tranche_age, sexe);
+
+
+-- ══ PILOTAGE — INDICATEURS AGRÉGÉS ══════════════════════════════════════
+--
+-- Le § 6 du sujet décrit gold comme des « indicateurs par usage ». Ces
+-- quatre tables sont exactement cela : un agrégat par indicateur du § 4,
+-- prêt à être lu sans jointure ni calcul.
+--
+-- Elles NE REMPLACENT PAS les faits, elles s'y ajoutent. Une table figée
+-- ne répond qu'à la question qu'on a anticipée : croiser la DMS par service
+-- ET par tranche d'âge, ou la ventiler par pathologie, exige de revenir au
+-- grain du séjour. L'étoile garde donc sa raison d'être — mais la lecture
+-- courante, celle des six indicateurs demandés, n'a plus besoin d'elle.
+--
+-- Deux conséquences pratiques :
+--   1. un indicateur = une table = une requête sans jointure ;
+--   2. le compte de restitution peut être borné à ces seules tables, donc
+--      privé du grain de l'événement et du pseudonyme patient.
+--
+-- Chaque table porte son EFFECTIF à côté de sa mesure. Un taux sans son
+-- dénominateur n'est pas interprétable : 24 % d'alertes sur 29 relevés et
+-- sur 2 000 ne se lisent pas de la même façon.
+
+-- DMS par service et par mois. Les séjours EN COURS sont exclus : ils n'ont
+-- pas de durée, et les compter au dénominateur écraserait la moyenne.
+CREATE TABLE IF NOT EXISTS gold_pilotage.kpi_dms_service
+(
+    service_code     LowCardinality(String),
+    service          String,
+    mois             Date,                -- premier jour du mois
+    dms_jours        Float64,
+    nb_sejours_clos  UInt32,
+    _run_id          String,
+    _built_at        DateTime
+)
+ENGINE = MergeTree ORDER BY (service_code, mois);
+
+-- Activité des urgences, par jour d'ADMISSION — jamais par jour de dépôt.
+CREATE TABLE IF NOT EXISTS gold_pilotage.kpi_urgences_jour
+(
+    jour             Date,
+    nb_passages      UInt32,
+    nb_sejours       UInt32,             -- toutes admissions confondues
+    _run_id          String,
+    _built_at        DateTime
+)
+ENGINE = MergeTree ORDER BY (jour);
+
+-- Réadmission à 30 jours. Numérateur et dénominateur sont exposés à côté du
+-- taux : sans eux, impossible de savoir si 12 % porte sur 50 ou 5 000
+-- séjours, ni de recomposer l'indicateur sur un autre périmètre.
+CREATE TABLE IF NOT EXISTS gold_pilotage.kpi_readmission_service
+(
+    service_code     LowCardinality(String),
+    service          String,
+    nb_sejours_index UInt32,             -- dénominateur : clos et non décédés
+    nb_readmis_30j   UInt32,             -- numérateur
+    taux_pct         Float64,
+    _run_id          String,
+    _built_at        DateTime
+)
+ENGINE = MergeTree ORDER BY (service_code);
+
+-- Relevés en alerte par jour de MESURE et par service. Le périmètre réel
+-- est restreint aux services équipés : les autres n'ont aucune ligne ici,
+-- plutôt qu'une ligne à zéro qui se lirait comme « aucune alerte ».
+CREATE TABLE IF NOT EXISTS gold_pilotage.kpi_alertes_jour
+(
+    jour             Date,
+    service_code     LowCardinality(String),
+    service          String,
+    nb_releves       UInt32,
+    nb_en_alerte     UInt32,
+    taux_pct         Float64,
+    _run_id          String,
+    _built_at        DateTime
+)
+ENGINE = MergeTree ORDER BY (jour, service_code);

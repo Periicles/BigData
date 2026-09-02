@@ -188,16 +188,36 @@ reconstruit silver et gold, et constate où tombe la coupe : la première est
 retenue, la seconde passe. Le seuil coupe bien *sous* 5, et non *à* 5, comme le
 demande le §5.
 
-### 2.5 Un modèle en étoile, pas un catalogue de KPI
+### 2.5 Un modèle en étoile, **et** un catalogue de KPI
 
-La couche gold aurait pu se réduire à une table par indicateur — une DMS
-pré-calculée, un taux de réadmission pré-calculé. Ce raccourci a un défaut
-rédhibitoire : **il fige les questions**. Croiser la durée de séjour par
-service *et* par tranche d'âge aurait exigé d'avoir anticipé cette combinaison
-précise et d'ajouter une table.
+Le § 6 décrit gold comme des « indicateurs par usage » — une table par
+indicateur. C'est le chemin de lecture le plus direct, et il correspond au
+besoin courant : la direction consulte une DMS, elle ne compose pas une
+requête. Mais pris seul, ce raccourci a un défaut rédhibitoire : **il fige les
+questions**. Croiser la durée de séjour par service *et* par tranche d'âge, ou
+la ventiler par pathologie, exige d'avoir anticipé la combinaison exacte et
+d'ajouter une table.
 
-Nous avons donc modélisé en étoile : **trois tables de faits, à trois grains
-distincts, partageant des dimensions conformes**.
+Nous avons donc fait les deux, dans cet ordre de dérivation :
+
+| Niveau | Contenu | Pour qui |
+| --- | --- | --- |
+| **Indicateurs agrégés** | `kpi_dms_service`, `kpi_urgences_jour`, `kpi_readmission_service`, `kpi_alertes_jour` | La lecture courante — un indicateur, une table, aucune jointure |
+| **Modèle en étoile** | 3 faits, 3 dimensions conformes | L'analyse qu'aucune table figée ne couvre |
+
+Les quatre tables d'indicateurs sont **dérivées des faits**, jamais de silver.
+Un indicateur et le fait dont il sort doivent donner le même chiffre par
+construction — et `tests.verifier indicateurs` confronte chaque table à son
+recalcul depuis les faits, en cardinalité comme en valeur. Sans ce contrôle,
+une table d'agrégat continuerait de servir un chiffre que plus rien ne fonde.
+
+Chaque table porte son **effectif** à côté de sa mesure. Un taux sans son
+dénominateur ne s'interprète pas : 24 % d'alertes sur 29 relevés et sur 2 000
+ne se lisent pas de la même façon — c'est exactement le cas qui se présente
+au dernier jour de la série.
+
+**L'étoile, sous les indicateurs** : trois tables de faits, à trois grains
+distincts, partageant des dimensions conformes.
 
 | Fait              | Grain                         | Volume |
 | ----------------- | ----------------------------- | ------ |
@@ -475,6 +495,20 @@ exactement les volumes de silver. La transformation est structurelle.
 | Dénormalisation                   | `patient_pseudo`, `tranche_age`, `sexe` recopiés dans `fact_diagnostic`                            |
 | Axes temporels                    | `date_admission` pour les séjours, **`date_mesure`** pour les relevés — la mesure, jamais le dépôt |
 
+Puis, **dérivés de ces faits**, les quatre indicateurs agrégés du pilotage :
+
+| Table | Grain | Lignes |
+| --- | --- | --- |
+| `kpi_dms_service` | service × mois | 8 |
+| `kpi_urgences_jour` | jour d'admission | 28 |
+| `kpi_readmission_service` | service | 8 |
+| `kpi_alertes_jour` | jour de mesure × service | 59 |
+
+Aucune information n'y est créée : ce sont des `GROUP BY` sur les faits, et
+l'égalité est vérifiée table par table. Chacune expose son effectif à côté de
+sa mesure, et `kpi_readmission_service` expose numérateur et dénominateur en
+plus du taux — de quoi recomposer l'indicateur sur un autre périmètre.
+
 Vers `gold_recherche`, en revanche, la réduction est massive et volontaire :
 
 | Opération                 | Effet                                                                 |
@@ -514,6 +548,13 @@ contrôle échoue avant qu'il ne soit diffusé.
 | **Relevés en alerte** | 2 453 sur 40 400 (6,1 %) — FC 274 · SpO2 1 108 · T° 1 071 | `en_alerte` est bien la réunion des trois motifs ; **les drapeaux sont recalculés depuis `eds/config.py`** et doivent coïncider — ce qui prouve que le seuil configuré est celui qui a servi, et non une constante figée dans le SQL |
 | **Prévalence par pathologie** | 11 pathologies, de 8 à 847 patients | L'agrégat reproduit exactement le recalcul depuis `fact_diagnostic` filtré sur le diagnostic principal ; `nb_sejours >= nb_patients` ; toute pathologie restituée existe dans la nomenclature |
 | **Distribution âge × sexe** | 89 cohortes, tranches 0-9 à 90-99 | Aucune tranche `inconnu` ; sexe borné à la nomenclature ; la somme des cases d'une pathologie ne dépasse pas son effectif de prévalence ; aucune pathologie décrite hors prévalence |
+
+**Chaque indicateur du pilotage existe en deux exemplaires**, et c'est
+délibéré : la table agrégée, qui est le chemin de lecture, et le fait, qui
+est la source de vérité. Un cinquième contrôle par indicateur confronte les
+deux — même nombre de lignes, mêmes valeurs. C'est ce qui empêche une table
+d'agrégat de dériver en silence après un changement de règle appliqué d'un
+seul côté.
 
 **Le contrôle le plus utile est celui des seuils d'alerte.** Ils sont
 présentés comme un paramètre d'exploitation, surchargeable par l'environnement
@@ -660,18 +701,23 @@ choix délibéré — faire entrer des identités de patients dans un historique
 d'où elles ne peuvent plus être retirées, serait contradictoire avec l'objet
 même de ce projet.
 
-**Les faits exposent le grain de l'événement au compte pilotage — écart assumé
-au §6.** Le sujet décrit la couche gold comme des « indicateurs par usage », ce
-qui suggère des agrégats. Le modèle en étoile retenu va au-delà : `fact_sejour`
-contient une ligne par séjour avec son pseudonyme patient, si bien que le compte
-pilotage peut compter des patients, ce qu'un entrepôt de KPI pré-agrégés lui
-interdirait.
+**Les faits exposent le grain de l'événement au compte pilotage.** Le sujet
+décrit la couche gold comme des « indicateurs par usage » : les quatre tables
+`kpi_*` répondent à cette attente et constituent le chemin de lecture normal.
+Mais le compte de pilotage conserve aussi l'accès à seize colonnes des faits,
+si bien qu'il peut composer des croisements qu'aucune table figée ne couvre —
+au prix d'un accès au grain du séjour.
 
 Cet écart est délibéré : il achète une liberté d'analyse que les indicateurs
-figés ne permettent pas — croiser la durée de séjour par service *et* par tranche
-d'âge ne demande aucune table supplémentaire. Les données restent pseudonymisées et l'accès
-nominatif et restreint. Le compromis mérite néanmoins d'être acté avec le DPO —
-c'est le seul point où la solution donne plus que ce que le sujet demandait.
+figés ne permettent pas — croiser la durée de séjour par service *et* par
+tranche d'âge ne demande aucune table supplémentaire. Les données restent
+pseudonymisées et l'accès nominatif et restreint.
+
+**Et il est désormais réversible sans rien perdre.** Depuis que les indicateurs
+existent en tables, borner `eds_pilotage` aux seules `kpi_*` suffirait à lui
+retirer tout accès au grain de l'événement : les six indicateurs demandés
+continueraient de fonctionner, seule la liberté de croisement disparaîtrait.
+C'est la décision à acter avec le DPO — elle ne coûte plus qu'un `REVOKE`.
 
 ### 3.4 Recommandations
 
