@@ -32,5 +32,44 @@ services:
       start_period: 10s
     restart: unless-stopped
 
+  # ── Restitution ────────────────────────────────────────────────────────
+  # Metabase lit l'entrepôt avec les comptes bornés du § 5 : il ne voit que
+  # ce que ClickHouse veut bien lui montrer. Le cloisonnement n'est donc pas
+  # un réglage de l'outil — c'est le moteur qui refuse, et le retirer de
+  # Metabase ne rendrait rien de plus visible.
+  metabase:
+    image: metabase/metabase:v0.56.13
+    container_name: eds-metabase
+    environment:
+      # Le pilote ClickHouse est livré AVEC l'image depuis Metabase 0.50 : il
+      # n'y a rien à télécharger ni à monter. C'est ce qui permet à la
+      # restitution de démarrer avec le reste, sans étape manuelle.
+      # N'installe pas la base de démonstration ni le tableau de bord
+      # « E-commerce Insights » livrés avec l'image : ils n'ont rien à voir
+      # avec l'entrepôt et brouillent la lecture à côté des deux tableaux de
+      # bord du CHU. `eds.restitution` retire de son côté ce qu'une instance
+      # déjà démarrée aurait chargé.
+      MB_LOAD_SAMPLE_CONTENT: "false"
+      MB_DB_TYPE: h2
+      MB_DB_FILE: /metabase-data/metabase.db
+      # Fuseau des questions : sans lui, les séries par jour glissent d'un
+      # jour selon le fuseau du navigateur.
+      JAVA_TIMEZONE: Europe/Paris
+    ports:
+      - "3000:3000"
+    volumes:
+      - metabase-data:/metabase-data
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:3000/api/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+    restart: unless-stopped
+
 volumes:
   clickhouse-data:
+  metabase-data:
