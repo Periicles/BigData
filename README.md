@@ -1,12 +1,14 @@
 # Entrepôt de Données de Santé — CHU
 
-Pipeline complet d'un EDS : collecte quotidienne des dépôts du CHU,
-pseudonymisation à l'ingestion, transformation en couches, jusqu'à deux bases
-**gold** cloisonnées — modèle en étoile pour le pilotage, agrégats anonymisés
-pour la recherche.
+Projet fil rouge · Module Big Data · M2 · Épreuve E05 (BC05, compétences C27 → C31)
 
-**Tout s'exécute en local, en trois commandes.** Aucune étape manuelle : la
-construction de l'entrepôt, l'attribution des droits et les deux tableaux de
+Construction d'un entrepôt de données de santé pour un CHU, depuis le dépôt
+quotidien de fichiers hétérogènes jusqu'aux tableaux de bord de pilotage et de
+recherche clinique, avec une chaîne de traitement automatisée et conforme au
+RGPD.
+
+**Tout s'exécute en local, en quatre commandes.** Aucune étape manuelle : la
+construction de l'entrepôt, l'attribution des droits et les trois tableaux de
 bord sont entièrement scriptés — rien à cliquer, rien à régler à la main.
 
 ---
@@ -26,22 +28,26 @@ source-filestorage/     dépôt du CHU, lecture seule (identités en clair)
         │  └──────────►  quarantaine     chaque ligne écartée, avec son motif
         ▼
    gold_pilotage                          gold_recherche
-   8 tables d'indicateurs                 agrégats · k ≥ 5
+   13 tables d'indicateurs                agrégats · k ≥ 5
    dms_service · urgences_jour            coh_prevalence
    readmission_service · alertes_jour     coh_description
    occupation_jour · mortalite_service
    casemix_service · origine_service
+   activite_categorie · actes_service
+   actes_type · densite_actes_lit
+   facturation_service
      ╰─ dérivées du modèle en étoile
-        fact_sejour · fact_diagnostic · fact_releve
-        dim_patient · dim_service · dim_cim10
+        fact_sejour · fact_diagnostic · fact_releve · fact_acte
+        dim_patient · dim_service · dim_cim10 · dim_ccam
         │                                        │
         └──── deux bases, deux comptes, droits disjoints ────┘
              le refus est prononcé par le moteur, pas par l'applicatif
         │                                        │
         ▼                                        ▼
    « Pilotage hospitalier »                « Recherche clinique »
-   tableau de bord Metabase                tableau de bord Metabase
-   connexion eds_pilotage                  connexion eds_recherche
+   « Activité technique et facturation »   tableau de bord Metabase
+   tableaux de bord Metabase               connexion eds_recherche
+   connexion eds_pilotage
      chacun branché sur la connexion ClickHouse bornée de son usage —
              Metabase hérite du refus, il ne peut pas le contourner
 ```
@@ -68,14 +74,27 @@ EDS_SEUIL_FC_BASSE=45 .venv/bin/python -m eds.run --tout
 
 ---
 
-## Prérequis
+## Les données
 
-| | |
-|---|---|
-| Docker Desktop | démarré (`docker info` doit répondre) |
-| Python | 3.11 ou plus |
-| Ports libres | `8123` ClickHouse, `3000` Metabase |
-| Données source | `eds-chu-sujet/source-filestorage/` — voir ci-dessous |
+Le CHU dépose ses fichiers dans un espace en lecture seule. Six flux, trois
+formats, et **chacun son calendrier** — c'est le point qui décide de la façon
+dont on les découvre : parcourir les dates d'un flux pour en lire un autre n'en
+lirait qu'une partie, sans erreur visible.
+
+| Flux | Format | Dépôts | Période | Volume |
+|---|---|---:|---|---:|
+| `sejours/<date>/sejours.csv` | CSV | 28 | 01 → 28 août | 6 797 séjours |
+| `diagnostics/<date>/diagnostics.json` | JSON imbriqué | 28 | 01 → 28 août | 12 720 codes CIM-10 |
+| `monitoring/<date>/monitoring.parquet` | Parquet | 28 | 01 → 28 août | 41 778 relevés |
+| `patients/<date>/patients.csv` | CSV | 3 | 26 → 28 août | 6 000 patients, en instantanés |
+| `actes/<date>/actes.parquet` | Parquet | 1 | 29 août | 8 112 actes médicaux |
+| `referentiels/<date>/*.csv` | CSV | 2 | 01 et 29 août | 8 services, 13 codes CIM-10, 8 actes CCAM, 7 services décrits |
+
+**Les référentiels sont résolus par FICHIER, pas par jour de dépôt.** Chacun
+est chargé depuis le dépôt le plus récent qui le fournit : `services.csv` et
+`cim10.csv` viennent du 1er août, `ccam.csv` et `description_service.csv` du
+29. Un référentiel redéposé remplace donc sa version précédente au lieu d'être
+ignoré.
 
 > **Les données ne sont pas dans ce dépôt, volontairement.** Les fichiers
 > `patients.csv` contiennent des identités en clair (nom, prénom, NIR). Les
@@ -83,6 +102,28 @@ EDS_SEUIL_FC_BASSE=45 .venv/bin/python -m eds.run --tout
 > Git, où elles resteraient — un commit ne se retire pas. Le répertoire
 > `eds-chu-sujet/source-filestorage/` est donc exclu par `.gitignore` : placez-y
 > le dépôt fourni par le CHU avant de lancer le pipeline.
+
+---
+
+## Prérequis
+
+| | |
+|---|---|
+| Docker Desktop | démarré (`docker info` doit répondre) |
+| Python | 3.11 ou plus |
+| Ports libres | `8123` ClickHouse, `3000` Metabase |
+| Données source | `eds-chu-sujet/source-filestorage/` — voir ci-dessus |
+
+Les images sont **épinglées à une version exacte** dans `docker-compose.yml` —
+`clickhouse-server:25.8` et `metabase:v0.58.32` — pour que deux clones du dépôt
+pris à deux dates donnent le même environnement. ClickHouse reste en 25.8
+délibérément : la 26.x renvoie les refus de droits en HTTP 403, statut sur
+lequel le pilote embarqué dans Metabase ne lit plus le message d'erreur, et la
+démonstration du cloisonnement au niveau de l'interface ne passerait plus.
+
+Le pipeline n'a que **deux dépendances Python** (`requirements.txt`). `pytest`
+vit à part, dans `requirements-dev.txt` : ce qui sert à tester n'alourdit pas ce
+qui fait tourner.
 
 ---
 
@@ -152,7 +193,7 @@ de lancer le provisioning ; `eds.restitution` attend lui-même cette santé
 avant d'agir, mais patienter évite un premier passage plus long. Le
 provisioning lui-même, une fois Metabase démarré, **prend environ 6 secondes
 au premier passage** — il crée tout : connexions, synchronisation des schémas,
-comptes, droits, 22 questions et la mise en page des deux tableaux de bord.
+comptes, droits, 31 questions et la mise en page des trois tableaux de bord.
 Les exécutions suivantes, qui ne font que réconcilier l'existant, **prennent
 environ 1,2 seconde**.
 
@@ -173,7 +214,7 @@ compte, et aucun n'a plus de droits que son besoin.
 | Compte ClickHouse | Usage | Droits |
 |---|---|---|
 | `eds_admin` | le pipeline | tous — il crée les tables et applique les habilitations |
-| `eds_pilotage` | **Direction hospitalière** — piloter l'activité et la qualité des soins | `SELECT` sur les **8 tables d'indicateurs**, plus **17 colonnes** des faits — ni `patient_pseudo`, ni `stay_id` |
+| `eds_pilotage` | **Direction hospitalière** — piloter l'activité et la qualité des soins | `SELECT` sur les **13 tables d'indicateurs**, plus **25 colonnes** des faits — ni `patient_pseudo`, ni `stay_id` |
 | `eds_recherche` | **Recherche clinique** — décrire des cohortes | `SELECT` sur les colonnes des deux tables de cohortes |
 | `eds_exploitation` | **Investigation technique** — incident, piste d'audit, effacement | `SELECT` sur `bronze`, `silver`, `quarantaine`, `ops` — **lecture seule** |
 
@@ -184,7 +225,7 @@ code.
 emploie.** Chacune des deux connexions posées par `eds.restitution` s'authentifie
 directement avec le compte ClickHouse borné de son usage — jamais avec
 `eds_admin` — c'est ce qui fait tenir le cloisonnement jusque dans
-l'interface (détails dans `docs/RAPPORT.md`, § 2.11).
+l'interface (détails dans `docs/RAPPORT.md`, § 7.4).
 
 **Les trois comptes Metabase sont provisionnés par `eds.restitution`, pas à la
 main.** Chaque compte applicatif (`pilotage@eds-chu.local`,
@@ -220,6 +261,8 @@ tableau de bord — l'administrateur seul voit les deux. Mots de passe dans
 
 ---
 
+---
+
 ## Lancer et rejouer
 
 ```bash
@@ -244,13 +287,25 @@ crontab ops/crontab.example     # exécution quotidienne à 03h10
 
 ---
 
+---
+
 ## Vérifier
 
-Dix contrôles, exécutables à tout moment. Ils constituent la démonstration
-des propriétés annoncées.
+Trois niveaux, exécutables à tout moment, et aucun ne remplace les deux
+autres. Les **tests unitaires** s'exercent sur les fonctions pures : hors ligne,
+sans Docker, en une fraction de seconde. `tests.verifier` confronte l'entrepôt
+vivant à lui-même — chaque indicateur au recalcul depuis le fait dont il sort.
+`tests.demontrer` écrit dedans, injecte des lignes fautives, puis le remet en
+état : il prouve que les règles FONCTIONNENT, y compris celles qu'aucune donnée
+réelle n'exerce.
 
 ```bash
-.venv/bin/python -m tests.verifier      # les cinq contrôles d'un coup
+.venv/bin/pip install -r requirements-dev.txt
+.venv/bin/python -m pytest              # 94 tests unitaires, 0,1 s, hors ligne
+```
+
+```bash
+.venv/bin/python -m tests.verifier      # 459 contrôles, cinq sections
 .venv/bin/python -m tests.demontrer     # les cinq démonstrations
 
 # ou une section à la fois
@@ -299,6 +354,8 @@ des propriétés annoncées.
 
 ---
 
+---
+
 ## Reprise sur incident
 
 Le journal se lit à deux endroits : `logs/pipeline.log` (une ligne JSON par
@@ -336,13 +393,7 @@ docker compose down -v && docker compose up -d
 
 ---
 
-## Documentation
-
-| Document | Contenu |
-|---|---|
-| [`docs/RAPPORT.md`](docs/RAPPORT.md) | **Le rapport de conception** — besoin métier, choix et justifications, architecture, limites et recommandations. Le document à lire en premier. |
-| [`exploration/RAPPORT-EXPLORATION.md`](exploration/RAPPORT-EXPLORATION.md) | L'état des lieux des sources, établi **avant** toute décision d'architecture : volumétrie, anomalies chiffrées, mesure du risque de ré-identification. |
-| [`sql/99_verifications.sql`](sql/99_verifications.sql) | Requêtes d'inspection à exécuter dans la console SQL, commentées. |
+---
 
 ## Conformité RGPD
 
@@ -364,40 +415,6 @@ Les cinq contraintes du sujet sont vérifiables en une commande
 > **Le sel de pseudonymisation n'est pas versionné.** Sa perte rend tout
 > rapprochement avec la source définitivement impossible — c'est la propriété
 > recherchée, et elle distingue une pseudonymisation d'un simple encodage.
-
-## Organisation du dépôt
-
-```
-docker-compose.yml       ClickHouse 25.8 et Metabase, versions épinglées
-requirements.txt         2 dépendances Python
-
-eds/                     le pipeline
-  config.py              chemins et secrets, sans dépendance externe
-  lake.py                copie transformante en flux + pseudonymisation
-  warehouse.py           client ClickHouse, exécution SQL, chargement bronze
-  journal.py             journalisation JSON + console
-  run.py                 orchestrateur — point d'entrée
-  restitution.py         provisionne Metabase par son API — Partie 1 du sujet
-
-sql/                     toute la transformation, versionnée
-  00_databases.sql       les six bases
-  10_bronze.sql          tables typées, partitionnées
-  15_quarantaine.sql     registre des lignes écartées ou corrigées
-  20_silver.sql          tables nettoyées, dédupliquées, enrichies
-  21_silver_transform.sql  les règles qualité — le cœur métier
-  30_gold.sql            étoile + tables d'indicateurs, deux bases séparées
-  31_gold_transform.sql  dimensions, faits, puis les indicateurs agrégés
-  50_droits.sql          comptes et droits — le cloisonnement
-  60_ops.sql             journal d'exécution
-  99_verifications.sql   requêtes d'inspection pour la console SQL
-
-tests/                   les dix contrôles et démonstrations
-exploration/             profilage initial des sources (DuckDB)
-ops/crontab.example      planification
-docs/                    rapport et documentation
-```
-
----
 
 ## Choix structurants
 
@@ -421,115 +438,60 @@ Détaillés et justifiés dans [`docs/RAPPORT.md`](docs/RAPPORT.md).
 
 ---
 
-## Évolution — dépôt du 29 août 2026
-
-Le CHU a déposé de nouvelles données après la première livraison : un flux
-d'actes techniques et deux nomenclatures. **Tout ce qui précède dans ce
-fichier reste valable** ; cette section dit uniquement ce qui s'y ajoute et
-ce qui s'y corrige. La justification complète des choix est au
-[§ 5 du rapport](docs/RAPPORT.md).
-
-### Ce qui s'ajoute aux sources
-
-| Source | Format | Contenu |
-| --- | --- | --- |
-| `actes/` | Parquet | 8 112 actes — `stay_id`, `code_ccam`, `acte_ts`. Aucune identité : recopié à l'octet, sans pseudonymisation |
-| `referentiels/2026-08-29/ccam.csv` | CSV | nomenclature des actes et tarifs T2A |
-| `referentiels/2026-08-29/description_service.csv` | CSV | catégorie, capacité en lits, pôle — pour 7 services sur 8 |
-
-### Ce que la section « Ce que fait le pipeline » ne montre pas encore
-
-Le schéma en tête de ce fichier décrit l'état de la première livraison. À
-l'arrivée des actes, gold compte **treize** tables d'indicateurs et non huit,
-et l'étoile porte un quatrième fait :
+## Organisation du dépôt
 
 ```
-   gold_pilotage
-   13 tables d'indicateurs                gold_recherche  (inchangé)
-   ── les huit d'origine ──               coh_prevalence
-   dms_service · urgences_jour            coh_description
-   readmission_service · alertes_jour
-   occupation_jour · mortalite_service
-   casemix_service · origine_service
-   ── les cinq de l'évolution ──
-   activite_categorie · actes_service
-   actes_type · densite_actes_lit
-   facturation_service
-     ╰─ dérivées du modèle en étoile
-        fact_sejour · fact_diagnostic · fact_releve · fact_acte
-        dim_patient · dim_service · dim_cim10 · dim_ccam
+docker-compose.yml       ClickHouse 25.8 et Metabase v0.58.32, versions épinglées
+requirements.txt         2 dépendances — le pipeline
+requirements-dev.txt     pytest — les tests unitaires, hors du chemin d'exécution
+
+eds/                     le pipeline
+  config.py              chemins, secrets et seuils, sans dépendance externe
+  lake.py                copie transformante en flux + pseudonymisation
+  warehouse.py           client ClickHouse, exécution SQL, chargement bronze
+  journal.py             journalisation JSON + console
+  run.py                 orchestrateur — point d'entrée
+  restitution.py         provisionne Metabase par son API
+
+sql/                     toute la transformation, versionnée
+  00_databases.sql       les six bases
+  10_bronze.sql          tables typées, partitionnées
+  15_quarantaine.sql     registre des lignes écartées ou corrigées
+  20_silver.sql          tables nettoyées, dédupliquées, enrichies
+  21_silver_transform.sql  les règles qualité — le cœur métier
+  30_gold.sql            étoile + tables d'indicateurs, deux bases séparées
+  31_gold_transform.sql  dimensions, faits, puis les indicateurs agrégés
+  50_droits.sql          comptes et droits — le cloisonnement
+  60_ops.sql             journal d'exécution
+  99_verifications.sql   requêtes d'inspection pour la console SQL
+
+tests/
+  verifier.py            459 contrôles contre l'entrepôt vivant
+  demontrer.py           cinq démonstrations, par injection puis remise en état
+  test_lake.py           94 tests unitaires — fonctions pures, hors ligne
+  test_warehouse.py      (pytest, sans Docker ni ClickHouse)
+  test_config.py
+
+exploration/             profilage initial des sources (DuckDB)
+ops/crontab.example      planification
+docs/                    le rapport, ses captures, et le script qui le rend en PDF
 ```
 
-`silver` gagne `actes`, `bronze` gagne `actes`, `ref_ccam` et
-`ref_description_service`. Aucun fichier n'a été ajouté dans `sql/` :
-l'arborescence de la section « Organisation du dépôt » est inchangée, les
-tables nouvelles vivant dans les fichiers existants.
+---
 
-### Ce qui se corrige
+## Documentation
 
-- **La documentation est désormais en deux fichiers**, un par livrable du
-  sujet. La section « Documentation » ci-dessus ne cite que le premier :
+| Document | Contenu |
+|---|---|
+| [`docs/RAPPORT.md`](docs/RAPPORT.md) | **Le rapport de conception**, en trois parties — l'interface d'analyse, l'automatisation, l'évolution demandée par le CHU — puis la validation des chiffres et les leçons du projet. Le document à lire en premier. Également fourni en [PDF](docs/RAPPORT.pdf), sommaire compris. |
+| [`exploration/RAPPORT-EXPLORATION.md`](exploration/RAPPORT-EXPLORATION.md) | L'état des lieux des sources, établi **avant** toute décision d'architecture : volumétrie, anomalies chiffrées, mesure du risque de ré-identification. |
+| [`sql/99_verifications.sql`](sql/99_verifications.sql) | Requêtes d'inspection à exécuter dans la console SQL, commentées. |
 
-  | Document | Contenu | Livrable |
-  | --- | --- | --- |
-  | [`docs/RAPPORT.md`](docs/RAPPORT.md) | besoin, sources, architecture justifiée, traitements, indicateurs, visualisations, limites et recommandations | *Partie 1 — « un dossier »* |
-  | [`docs/EXPLOITATION.md`](docs/EXPLOITATION.md) | automatisation, gestion des erreurs, journalisation, traçabilité, lancement, reprise sur incident, maintenance | *Partie 2 — « une documentation d'utilisation et de maintenance »* |
-
-  Rien n'a été supprimé au passage : les deux réunis contiennent exactement ce
-  que contenait le rapport d'origine. Chacun est également fourni en PDF, avec
-  son sommaire — régénérables par [`docs/en_pdf.py`](docs/en_pdf.py).
-- **Les référentiels ne sont plus déposés le seul premier jour.** Chacun est
-  résolu **par fichier**, sur son dépôt le plus récent. Un référentiel
-  redéposé remplace donc sa version précédente au lieu d'être ignoré.
-- **`docker-compose.yml` épingle Metabase `v0.58.32`** (ligne LTS) et non plus
-  `v0.56.13`, qui traînait 7 vulnérabilités critiques. ClickHouse reste en
-  `25.8` délibérément : la 26.x renvoie les refus de droits en HTTP 403, un
-  statut sur lequel le pilote embarqué dans Metabase ne lit plus le message
-  d'erreur — le cloisonnement tiendrait, mais ne se démontrerait plus depuis
-  l'interface.
-- **Un troisième tableau de bord**, « Activité technique et facturation »,
-  porte les cinq nouveaux indicateurs. Les deux premiers sont inchangés. Il
-  vit dans la collection du pilotage et interroge la même connexion : aucun
-  droit n'est élargi, ce que `tests.demontrer restitution` vérifie.
-
-### Ingérer le nouveau dépôt
-
-Le pipeline incrémental suffit — c'est ce que demande le sujet d'évolution :
+Le PDF se régénère depuis le Markdown — il ne peut donc pas en diverger :
 
 ```bash
-.venv/bin/python -m eds.run          # ne traite que les jours non encore ingérés
+python3 -m venv /tmp/pdfvenv && /tmp/pdfvenv/bin/pip install markdown pygments
+/tmp/pdfvenv/bin/python docs/en_pdf.py docs/RAPPORT.md /tmp/rapport.html "Rapport"
+"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless \
+    --no-pdf-header-footer --print-to-pdf=docs/RAPPORT.pdf file:///tmp/rapport.html
 ```
-
-Sur un entrepôt déjà à jour de la première livraison, seul le 29 août est
-traité ; les 28 jours antérieurs ne sont ni relus ni recopiés. Silver et gold
-sont en revanche recalculés intégralement, comme toujours.
-
-> **Une seule manipulation manuelle, à faire une fois.** `sql/30_gold.sql`
-> n'exécute que des `CREATE TABLE IF NOT EXISTS`, qui n'ajoutent pas les
-> colonnes nouvelles à une table déjà présente. Sur un entrepôt construit
-> avant cette évolution, `dim_service` doit donc être supprimée pour être
-> reconstruite avec `categorie`, `capacite_lits` et `pole` :
->
-> ```sql
-> DROP TABLE IF EXISTS gold_pilotage.dim_service;
-> ```
->
-> Sans perte : gold est intégralement dérivé et se reconstruit à l'exécution
-> suivante. Sur un entrepôt neuf, il n'y a rien à faire.
-
-### Le service non décrit
-
-Le référentiel de description couvre 7 services sur 8 — la Neurologie n'y
-figure pas, alors qu'elle porte 18 % de l'activité technique. Deux réponses,
-selon le rôle de la colonne :
-
-- **`categorie` et `pole` sont des axes de regroupement** → `'non renseigné'`.
-  Le service reste compté, et le total par catégorie vaut toujours celui de
-  l'hôpital (6 729 séjours).
-- **`capacite_lits` est un dénominateur** → `NULL`, et
-  `kpi_densite_actes_lit` **n'a pas de ligne** pour ce service. Un ratio
-  indéfini est absent, jamais nul. L'écart avec `kpi_actes_service` vaut
-  exactement 1 471 actes, et c'est un contrôle de `tests.verifier`.
-
-La Neurologie figure donc dans quatre des cinq nouveaux indicateurs, et n'est
-absente que de celui dont le dénominateur lui manque.
