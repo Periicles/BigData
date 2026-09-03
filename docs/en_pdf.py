@@ -52,6 +52,21 @@ def _sommaire(html: str) -> str:
 
 corps = corps.replace("<hr />", _sommaire(corps) + "<hr />", 1)
 
+# ── Images ──────────────────────────────────────────────────────────────
+# Les chemins du Markdown sont relatifs au DOCUMENT (`imgs/…`), alors que le
+# HTML intermédiaire vit ailleurs. Sans réécriture, Chrome ne trouverait rien
+# et imprimerait des cadres vides — un défaut invisible dans le HTML, qui ne
+# se voit qu'en ouvrant le PDF.
+def _absolutiser(html: str) -> str:
+    def sub(m):
+        chemin = m.group(1)
+        if chemin.startswith(("http://", "https://", "data:", "file://", "/")):
+            return m.group(0)
+        return f'src="{(source.parent / chemin).resolve().as_uri()}"'
+    return re.sub(r'src="([^"]+)"', sub, html)
+
+corps = _absolutiser(corps)
+
 # Chaque chapitre commence une page — sauf le tout premier titre, et sauf la
 # section qui suit immédiatement une page de partie (elles feraient deux sauts
 # consécutifs, donc une page blanche).
@@ -88,6 +103,22 @@ h1.couverture { margin-top: 175pt; font-size: 30pt; text-align: center;
 h1.couverture + p { text-align: center; font-size: 12pt; color: #444;
                     margin-top: 10pt; }
 h1.couverture ~ hr { display: none; }
+/* Captures d'écran. Le paragraphe qui SUIT une image en est la légende :
+   `:has()` évite d'avoir à baliser chaque couple en HTML dans le Markdown. */
+/* Hauteur plafonnée : une console ClickHouse imprimée occupe sinon une page
+   entière pour trois lignes de résultat. Les tableaux de bord, eux, sont
+   denses de haut en bas et méritent la page. */
+img { max-width: 100%; max-height: 290pt; width: auto; height: auto;
+      display: block; margin: 0 auto;
+      border: 0.6pt solid #cfd4da; border-radius: 3pt; }
+img[src*="tdb-"] { max-height: 660pt; }
+p:has(> img) { margin: 10pt 0 0; break-inside: avoid; break-after: avoid; }
+p:has(> img) + p em { display: block; font-size: 8.8pt; color: #555;
+                      text-align: left; padding: 0 4pt; }
+p:has(> img) + p { margin: 4pt 0 12pt; break-inside: avoid; }
+/* Deux captures qui se suivent forment une paire : elles restent groupées. */
+p:has(> img) + p:has(> img) { margin-top: 5pt; }
+
 nav.sommaire { break-before: page; break-after: page; }
 nav.sommaire h2.sansnum { break-before: auto; font-size: 17pt; border-bottom: 1.6pt solid #1a1a1a; }
 nav.sommaire ul { list-style: none; padding: 0; margin: 12pt 0 0; }
@@ -104,7 +135,7 @@ h1.partie + p { font-size: 11pt; color: #444; text-align: left; margin-bottom: 4
 h1.partie ~ p em { color: #444; }
 h2, h3, h4 { break-after: avoid; }
 p, ul, ol, table, pre, blockquote { break-inside: avoid-page; }
-p { margin: 0 0 7pt; text-align: justify; }
+p { margin: 0 0 7pt; text-align: justify; orphans: 2; widows: 2; }
 ul, ol { margin: 0 0 8pt; padding-left: 17pt; }
 li { margin-bottom: 3pt; }
 strong { font-weight: 700; }

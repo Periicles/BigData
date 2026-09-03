@@ -142,6 +142,14 @@ Un contrôle automatisé rejoue les **17 384 valeurs identifiantes** de la sourc
 contre l'intégralité du lake et échoue si l'une d'elles y apparaît. Il vérifie
 également l'absence de collision de pseudonyme et la préservation des jointures.
 
+![Recherche des colonnes identifiantes dans toutes les bases de l'entrepôt, résultat vide](imgs/clickhouse-aucune-colonne-identifiante.png)
+
+*Le contrôle le plus direct, exécuté avec le compte d'administration qui voit
+tout : aucune colonne `nir`, `nom`, `prenom`, `birth_date` ni `patient_id` ne
+subsiste nulle part dans l'entrepôt. `empty result` — et ce n'est pas un
+périmètre restreint qui le produit, c'est `system.columns` interrogé sur toutes
+les bases.*
+
 ### 2.3 Un cloisonnement physique, pas conventionnel
 
 Le sujet définit **deux publics** et ce que chacun doit voir : au pilotage la
@@ -193,9 +201,26 @@ pas accordées du tout. Vérifié : il ne peut ni lire le pseudonyme, ni dénomb
 des patients, ni exécuter un `SELECT *` — et il calcule sans difficulté la DMS,
 les passages aux urgences et les relevés en alerte.
 
+![Le compte pilotage lit les colonnes qui lui sont accordées](imgs/clickhouse-pilotage-colonnes-autorisees.png)
+
+![Le même compte, sur la même table, se voit refuser la colonne patient_pseudo](imgs/clickhouse-pilotage-colonne-refusee.png)
+
+*Le même compte, la même table, et une colonne refusée. Le moteur nomme
+précisément ce qui manque — `grant SELECT(patient_pseudo) ON
+gold_pilotage.fact_sejour` — ce qui rend la borne vérifiable plutôt que
+déclarative. Un `GRANT` posé base par base n'aurait pas produit ce refus.*
+
 **Cette borne ne dépend pas de qui interroge, mais du compte employé.**
 Quiconque se connecte avec `eds_pilotage` — administrateur compris — se voit
-opposer le même refus, prononcé par le moteur. C'est ce qui distingue un
+opposer le même refus, prononcé par le moteur.
+
+![Le compte pilotage interroge sa propre base sans difficulté](imgs/clickhouse-pilotage-base-autorisee.png)
+
+![Le même compte se voit refuser la base de recherche](imgs/clickhouse-pilotage-base-refusee.png)
+
+*La même session, deux requêtes : l'une passe, l'autre est refusée en
+`ACCESS_DENIED`. Aucune application n'intervient entre les deux — c'est la
+console SQL de ClickHouse.* C'est ce qui distingue un
 cloisonnement d'un réglage d'interface : l'outil de restitution branché sur ces
 bases — Metabase, § 2.11 — hérite de la borne sans pouvoir la contourner, quels
 que soient ses propres réglages. Ce n'est plus une intention : chaque public
@@ -815,6 +840,30 @@ lui-même (« Not enough privileges… ACCESS_DENIED »), pas un message Metabas
 la preuve que même le compte le plus privilégié de l'interface ne franchit pas
 la borne.
 
+![Accueil Metabase du compte pilotage : seule la collection Pilotage hospitalier apparaît](imgs/metabase-pilotage-accueil.png)
+
+![Accueil Metabase du compte recherche : seule la collection Recherche clinique apparaît](imgs/metabase-recherche-accueil.png)
+
+*Les deux vues vont par paire, et c'est la paire qui prouve quelque chose : le
+compte nommé en tête de page ne voit, dans sa barre latérale, que sa propre
+collection. Une seule des deux captures laisserait penser que la collection
+absente n'est peut-être pas épinglée.*
+
+![Le compte pilotage se voit refuser le tableau de bord de la recherche](imgs/metabase-pilotage-refus-recherche.png)
+
+*Forcer l'adresse du tableau de bord étranger ne contourne rien. Ici c'est
+Metabase qui refuse — la capture suivante montre que le moteur refuse aussi,
+indépendamment.*
+
+![Requête SQL native sur la base étrangère, refusée par ClickHouse](imgs/metabase-recherche-sql-refuse.png)
+
+*La démonstration décisive. Le compte recherche compose une question SQL native
+sur `gold_pilotage.fact_sejour` : le message affiché est celui de ClickHouse,
+« eds_recherche: Not enough privileges… ACCESS_DENIED », pas un message
+Metabase. Le panneau de droite ajoute une confirmation : la connexion Recherche
+n'expose que **2 tables**, les deux tables d'agrégats — le reste de l'entrepôt
+n'existe pas pour elle.*
+
 **Chaque question du tableau de bord est du SQL natif** (`dataset_query.type
 = "native"`), jamais le query-builder graphique de Metabase. Un query-builder
 recompose une requête à partir de clics, avec un SQL généré qu'il faut relire
@@ -844,6 +893,19 @@ quatre cartes de texte, réparties en deux vues qui ne partagent aucune donnée.
 | Pathologies diffusables · effectif total décrit | deux compteurs |
 | Prévalence par pathologie | barres, plus une table opposant l'effectif de référence à celui du seul motif d'hospitalisation |
 | Description de cohorte, âge × sexe | pyramide des âges, plus la table détaillée par pathologie |
+
+![Tableau de bord Pilotage hospitalier](imgs/metabase-tdb-pilotage.png)
+
+*« Pilotage hospitalier » — les quatre indicateurs nommés du § 4 du sujet et
+les vues complémentaires. Les réserves sont écrites dans le tableau de bord
+lui-même, à côté des courbes qu'elles nuancent, et non reléguées dans ce
+rapport.*
+
+![Tableau de bord Recherche clinique](imgs/metabase-tdb-recherche.png)
+
+*« Recherche clinique » — les mêmes données sources, une lecture entièrement
+différente : des agrégats filtrés au seuil de 5 patients, aucun pseudonyme,
+l'âge en tranches de dix ans. Les deux vues ne partagent aucune table.*
 
 **Trois réserves sont écrites dans les tableaux de bord eux-mêmes**, pas
 seulement dans ce rapport : le monitoring ne concerne que deux services, la
@@ -1330,6 +1392,16 @@ réécrire l'historique.
 | ③ | `kpi_actes_type` | répartition par code CCAM | 8 codes, parts sommant à 100 % |
 | ④ | `kpi_densite_actes_lit` | actes rapportés aux lits | **7 lignes** — URGENCES 86,55 actes/lit |
 | ⑤ | `kpi_facturation_service` | montant T2A par service | 8 services, **2 199 450 €** |
+
+![Tableau de bord Activité technique et facturation](imgs/metabase-tdb-evolution.png)
+
+*Le troisième tableau de bord, ajouté sans toucher aux deux premiers. Il rend
+visible d'un coup d'œil ce que le § 4.4 explique : la Neurologie figure dans
+« Nombre d'actes par service », dans « Activité et DMS par catégorie » — sous
+l'étiquette « non renseigné » — et dans « Montant facturé », mais **pas** dans
+« Densité d'actes par lit », faute de dénominateur. L'encadré placé à côté de
+ce graphe donne au lecteur du tableau de bord la même explication que ce
+rapport, sans qu'il ait à l'ouvrir.*
 
 Deux propriétés valent d'être signalées.
 
