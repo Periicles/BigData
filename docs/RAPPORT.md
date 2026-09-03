@@ -45,18 +45,18 @@ Le dépôt lui-même est décrit dans le [README](../README.md).
   - [13. Utilisation et maintenance](#13-utilisation-et-maintenance)
 - [Partie 3 — L'évolution du besoin](#partie-3-lévolution-du-besoin)
   - [14. La demande](#14-la-demande)
-    - [14.1. Ce que le CHU demande, et ce qui change](#141-ce-que-le-chu-demande-et-ce-qui-change)
-    - [14.2. Un référentiel n'est pas un jour de dépôt](#142-un-référentiel-nest-pas-un-jour-de-dépôt)
-    - [14.3. « Sans retraiter l'existant » — la propriété était déjà là](#143-sans-retraiter-lexistant-la-propriété-était-déjà-là)
+    - [14.1 Ce que le CHU demande, et ce qui change](#141-ce-que-le-chu-demande-et-ce-qui-change)
+    - [14.2 Un référentiel n'est pas un jour de dépôt](#142-un-référentiel-nest-pas-un-jour-de-dépôt)
+    - [14.3 « Sans retraiter l'existant » — la propriété était déjà là](#143-sans-retraiter-lexistant-la-propriété-était-déjà-là)
   - [15. Les deux pièges](#15-les-deux-pièges)
-    - [15.1. Le premier piège : un référentiel incomplet](#151-le-premier-piège-un-référentiel-incomplet)
-    - [15.2. Le second piège : le service vient du séjour](#152-le-second-piège-le-service-vient-du-séjour)
+    - [15.1 Le premier piège : un référentiel incomplet](#151-le-premier-piège-un-référentiel-incomplet)
+    - [15.2 Le second piège : le service vient du séjour](#152-le-second-piège-le-service-vient-du-séjour)
   - [16. Le modèle après l'évolution](#16-le-modèle-après-lévolution)
-    - [16.1. Un quatrième fait, une dimension de plus](#161-un-quatrième-fait-une-dimension-de-plus)
-    - [16.2. La qualité des actes, démontrée sur des règles qui ne servent pas](#162-la-qualité-des-actes-démontrée-sur-des-règles-qui-ne-servent-pas)
+    - [16.1 Un quatrième fait, une dimension de plus](#161-un-quatrième-fait-une-dimension-de-plus)
+    - [16.2 La qualité des actes, démontrée sur des règles qui ne servent pas](#162-la-qualité-des-actes-démontrée-sur-des-règles-qui-ne-servent-pas)
   - [17. Les nouveaux indicateurs](#17-les-nouveaux-indicateurs)
-    - [17.1. Ce qu'ils portent, et ce qu'ils prouvent](#171-ce-quils-portent-et-ce-quils-prouvent)
-    - [17.2. Ce qu'il a fallu accepter](#172-ce-quil-a-fallu-accepter)
+    - [17.1 Ce qu'ils portent, et ce qu'ils prouvent](#171-ce-quils-portent-et-ce-quils-prouvent)
+    - [17.2 Ce qu'il a fallu accepter](#172-ce-quil-a-fallu-accepter)
 - [Validation des chiffres](#validation-des-chiffres)
   - [L'équation de conservation, couche par couche](#léquation-de-conservation-couche-par-couche)
   - [Les indicateurs, confrontés à leur recalcul depuis les faits](#les-indicateurs-confrontés-à-leur-recalcul-depuis-les-faits)
@@ -1719,7 +1719,7 @@ docker compose down -v && docker compose up -d
 
 ## 14. La demande
 
-### 14.1. Ce que le CHU demande, et ce qui change
+### 14.1 Ce que le CHU demande, et ce qui change
 
 Le 29 août 2026, le CHU dépose de nouvelles données et formule une consigne
 en une phrase : *« faites évoluer votre entrepôt — sans tout refaire, sans
@@ -1744,7 +1744,7 @@ désormais les actes : bronze passe de **79 316 à 87 443 lignes**
 Le tableau des sources du § 2.1 marque les référentiels « 1er jour » ; ils
 arrivent maintenant en **deux dépôts**, ce dont traite le § 14.2.
 
-### 14.2. Un référentiel n'est pas un jour de dépôt
+### 14.2 Un référentiel n'est pas un jour de dépôt
 
 Le premier obstacle n'était pas dans les nouvelles données mais dans le code
 qui les aurait ignorées. `ingerer_referentiels` chargeait la nomenclature
@@ -1783,7 +1783,7 @@ Le journal a gagné deux champs (`table`, `fichier`) à cette occasion : quatre
 chargements de référentiels produisaient jusque-là quatre lignes
 indiscernables.
 
-### 14.3. « Sans retraiter l'existant » — la propriété était déjà là
+### 14.3 « Sans retraiter l'existant » — la propriété était déjà là
 
 Le sujet demande d'ingérer le nouveau dépôt **par le pipeline incrémental**.
 Aucun développement n'a été nécessaire : la propriété existait, il suffisait
@@ -1805,7 +1805,7 @@ schéma change.
 
 ## 15. Les deux pièges
 
-### 15.1. Le premier piège : un référentiel incomplet
+### 15.1 Le premier piège : un référentiel incomplet
 
 > *« Le référentiel de description peut être incomplet : que faites-vous d'un
 > service non décrit ? »*
@@ -1856,7 +1856,7 @@ laisser le lecteur découvrir un service manquant.
 Le résultat net : **la Neurologie figure dans quatre des cinq indicateurs**,
 et n'est absente que de celui dont le dénominateur lui manque.
 
-### 15.2. Le second piège : le service vient du séjour
+### 15.2 Le second piège : le service vient du séjour
 
 > *« "Actes par service" : le service est porté par le séjour, pas par
 > l'acte — récupérez-le sans relier deux tables de faits entre elles. »*
@@ -1899,7 +1899,7 @@ donnent la même première mesure et deux secondes très différentes.
 
 ## 16. Le modèle après l'évolution
 
-### 16.1. Un quatrième fait, une dimension de plus
+### 16.1 Un quatrième fait, une dimension de plus
 
 Le modèle gagne un quatrième fait et une dimension, et en enrichit une autre.
 
@@ -1930,7 +1930,7 @@ facturation : elle change dans le temps sans que les actes déjà réalisés
 changent. Figée sur chaque ligne de fait, une révision tarifaire obligerait à
 réécrire l'historique.
 
-### 16.2. La qualité des actes, démontrée sur des règles qui ne servent pas
+### 16.2 La qualité des actes, démontrée sur des règles qui ne servent pas
 
 `silver.actes` applique aux actes les règles déjà en vigueur pour les
 diagnostics et les relevés, avec trois motifs de quarantaine :
@@ -1953,7 +1953,7 @@ dates qui encadrent le séjour.
 
 ## 17. Les nouveaux indicateurs
 
-### 17.1. Ce qu'ils portent, et ce qu'ils prouvent
+### 17.1 Ce qu'ils portent, et ce qu'ils prouvent
 
 | # | Table | Ce qu'elle porte | Résultat |
 | --- | --- | --- | --- |
@@ -1988,7 +1988,7 @@ rejoignent donc le harnais du § 6, et dix-sept contrôles supplémentaires
 vérifient ce qui leur est propre — conservation des totaux, absence de ligne
 pour un dénominateur inconnu, écart chiffré avec les services non décrits.
 
-### 17.2. Ce qu'il a fallu accepter
+### 17.2 Ce qu'il a fallu accepter
 
 **Faire évoluer une table gold demande de la supprimer une fois.**
 `30_gold.sql` n'exécute que des `CREATE TABLE IF NOT EXISTS`, qui n'ajoutent
