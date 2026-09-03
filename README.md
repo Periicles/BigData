@@ -418,3 +418,107 @@ Détaillés et justifiés dans [`docs/RAPPORT.md`](docs/RAPPORT.md).
   déclarer une vue `SQL SECURITY DEFINER`, mais on aurait alors un indicateur
   recalculé à chaque lecture, sans instantané à vérifier — c'est l'alternative
   écartée.
+
+---
+
+## Évolution — dépôt du 29 août 2026
+
+Le CHU a déposé de nouvelles données après la première livraison : un flux
+d'actes techniques et deux nomenclatures. **Tout ce qui précède dans ce
+fichier reste valable** ; cette section dit uniquement ce qui s'y ajoute et
+ce qui s'y corrige. La justification complète des choix est au
+[§ 5 du rapport](docs/RAPPORT.md).
+
+### Ce qui s'ajoute aux sources
+
+| Source | Format | Contenu |
+| --- | --- | --- |
+| `actes/` | Parquet | 8 112 actes — `stay_id`, `code_ccam`, `acte_ts`. Aucune identité : recopié à l'octet, sans pseudonymisation |
+| `referentiels/2026-08-29/ccam.csv` | CSV | nomenclature des actes et tarifs T2A |
+| `referentiels/2026-08-29/description_service.csv` | CSV | catégorie, capacité en lits, pôle — pour 7 services sur 8 |
+
+### Ce que la section « Ce que fait le pipeline » ne montre pas encore
+
+Le schéma en tête de ce fichier décrit l'état de la première livraison. À
+l'arrivée des actes, gold compte **treize** tables d'indicateurs et non huit,
+et l'étoile porte un quatrième fait :
+
+```
+   gold_pilotage
+   13 tables d'indicateurs                gold_recherche  (inchangé)
+   ── les huit d'origine ──               coh_prevalence
+   dms_service · urgences_jour            coh_description
+   readmission_service · alertes_jour
+   occupation_jour · mortalite_service
+   casemix_service · origine_service
+   ── les cinq de l'évolution ──
+   activite_categorie · actes_service
+   actes_type · densite_actes_lit
+   facturation_service
+     ╰─ dérivées du modèle en étoile
+        fact_sejour · fact_diagnostic · fact_releve · fact_acte
+        dim_patient · dim_service · dim_cim10 · dim_ccam
+```
+
+`silver` gagne `actes`, `bronze` gagne `actes`, `ref_ccam` et
+`ref_description_service`. Aucun fichier n'a été ajouté dans `sql/` :
+l'arborescence de la section « Organisation du dépôt » est inchangée, les
+tables nouvelles vivant dans les fichiers existants.
+
+### Ce qui se corrige
+
+- **Les référentiels ne sont plus déposés le seul premier jour.** Chacun est
+  résolu **par fichier**, sur son dépôt le plus récent. Un référentiel
+  redéposé remplace donc sa version précédente au lieu d'être ignoré.
+- **`docker-compose.yml` épingle Metabase `v0.58.32`** (ligne LTS) et non plus
+  `v0.56.13`, qui traînait 7 vulnérabilités critiques. ClickHouse reste en
+  `25.8` délibérément : la 26.x renvoie les refus de droits en HTTP 403, un
+  statut sur lequel le pilote embarqué dans Metabase ne lit plus le message
+  d'erreur — le cloisonnement tiendrait, mais ne se démontrerait plus depuis
+  l'interface.
+- **Un troisième tableau de bord**, « Activité technique et facturation »,
+  porte les cinq nouveaux indicateurs. Les deux premiers sont inchangés. Il
+  vit dans la collection du pilotage et interroge la même connexion : aucun
+  droit n'est élargi, ce que `tests.demontrer restitution` vérifie.
+
+### Ingérer le nouveau dépôt
+
+Le pipeline incrémental suffit — c'est ce que demande le sujet d'évolution :
+
+```bash
+.venv/bin/python -m eds.run          # ne traite que les jours non encore ingérés
+```
+
+Sur un entrepôt déjà à jour de la première livraison, seul le 29 août est
+traité ; les 28 jours antérieurs ne sont ni relus ni recopiés. Silver et gold
+sont en revanche recalculés intégralement, comme toujours.
+
+> **Une seule manipulation manuelle, à faire une fois.** `sql/30_gold.sql`
+> n'exécute que des `CREATE TABLE IF NOT EXISTS`, qui n'ajoutent pas les
+> colonnes nouvelles à une table déjà présente. Sur un entrepôt construit
+> avant cette évolution, `dim_service` doit donc être supprimée pour être
+> reconstruite avec `categorie`, `capacite_lits` et `pole` :
+>
+> ```sql
+> DROP TABLE IF EXISTS gold_pilotage.dim_service;
+> ```
+>
+> Sans perte : gold est intégralement dérivé et se reconstruit à l'exécution
+> suivante. Sur un entrepôt neuf, il n'y a rien à faire.
+
+### Le service non décrit
+
+Le référentiel de description couvre 7 services sur 8 — la Neurologie n'y
+figure pas, alors qu'elle porte 18 % de l'activité technique. Deux réponses,
+selon le rôle de la colonne :
+
+- **`categorie` et `pole` sont des axes de regroupement** → `'non renseigné'`.
+  Le service reste compté, et le total par catégorie vaut toujours celui de
+  l'hôpital (6 729 séjours).
+- **`capacite_lits` est un dénominateur** → `NULL`, et
+  `kpi_densite_actes_lit` **n'a pas de ligne** pour ce service. Un ratio
+  indéfini est absent, jamais nul. L'écart avec `kpi_actes_service` vaut
+  exactement 1 471 actes, et c'est un contrôle de `tests.verifier`.
+
+La Neurologie figure donc dans quatre des cinq nouveaux indicateurs, et n'est
+absente que de celui dont le dénominateur lui manque.

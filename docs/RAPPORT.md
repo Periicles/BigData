@@ -1600,3 +1600,344 @@ référence de l'intervenant a permis de trancher lequel des deux est attendu.
 C'est la limite structurelle d'un contrôle de propriété, et la raison d'être
 de `tests.verifier conformite` : une entreprise ne se contente pas de calculer
 juste, elle doit calculer la bonne chose.
+
+---
+
+## 5. L'évolution du besoin — actes, description de service et facturation
+
+### 5.1 Ce que le CHU demande, et ce qui change
+
+Le 29 août 2026, le CHU dépose de nouvelles données et formule une consigne
+en une phrase : *« faites évoluer votre entrepôt — sans tout refaire, sans
+rien casser »*. Trois fichiers arrivent :
+
+| Fichier | Format | Contenu |
+| --- | --- | --- |
+| `actes/2026-08-29/actes.parquet` | Parquet | 8 112 actes techniques — `stay_id`, `code_ccam`, `acte_ts` |
+| `referentiels/2026-08-29/ccam.csv` | CSV | 8 codes d'actes, leur libellé et leur tarif |
+| `referentiels/2026-08-29/description_service.csv` | CSV | catégorie, capacité en lits et pôle — pour **7 services sur 8** |
+
+Cinq indicateurs sont attendus : activité et DMS par catégorie de service,
+nombre d'actes par service, répartition par type d'acte, densité d'actes par
+lit, montant facturé (T2A). Le sujet énonce lui-même les deux pièges à
+éviter, et c'est autour d'eux que s'organisent les choix qui suivent.
+
+**Aucune section précédente de ce rapport n'a été réécrite.** Les chiffres
+des § 1 à § 4 décrivent l'entrepôt tel qu'il était à la première livraison,
+et restent exacts pour ce périmètre. Deux totaux, en revanche, incluent
+désormais les actes : bronze passe de **79 316 à 87 443 lignes**
+(§ 2.9), silver de 66 369 à **74 481**, et le lake de 89 à 92 fichiers.
+Le tableau des sources du § 1.1 marque les référentiels « 1er jour » ; ils
+arrivent maintenant en **deux dépôts**, ce dont traite le § 5.2.
+
+### 5.2 Un référentiel n'est pas un jour de dépôt
+
+Le premier obstacle n'était pas dans les nouvelles données mais dans le code
+qui les aurait ignorées. `ingerer_referentiels` chargeait la nomenclature
+depuis **un seul jour** — le premier :
+
+```python
+compteurs = charger_referentiels(self.ch, jours[0], self.run_id)
+```
+
+Ce choix était juste tant que tous les référentiels arrivaient ensemble. Il
+devient faux dès qu'un second dépôt en apporte d'autres : `ccam.csv` et
+`description_service.csv`, déposés le 29 août, n'auraient jamais été lus, et
+rien ne l'aurait signalé — le pipeline aurait tourné vert sur un entrepôt
+amputé.
+
+La correction ne consiste pas à prendre le dernier jour plutôt que le
+premier, ce qui aurait fait disparaître `services.csv` et `cim10.csv` à la
+place. **Un référentiel est un FICHIER, pas un jour.** Chacun est désormais
+résolu indépendamment, sur le dépôt le plus récent qui le fournit
+(`_dernier_depot`, dans `eds/warehouse.py`) :
+
+```
+bronze.ref_services              <- referentiels/2026-08-01/services.csv
+bronze.ref_cim10                 <- referentiels/2026-08-01/cim10.csv
+bronze.ref_ccam                  <- referentiels/2026-08-29/ccam.csv
+bronze.ref_description_service   <- referentiels/2026-08-29/description_service.csv
+```
+
+Cette formulation règle aussi un cas que l'ancienne ne couvrait pas : un
+référentiel **redéposé** remplace maintenant sa version précédente, au lieu
+d'être ignoré au profit du premier dépôt. Et un référentiel qu'aucun dépôt ne
+fournit est **signalé, sa table laissée intacte** — la tronquer remplacerait
+une nomenclature utilisable par une table vide, sans rien apporter.
+
+Le journal a gagné deux champs (`table`, `fichier`) à cette occasion : quatre
+chargements de référentiels produisaient jusque-là quatre lignes
+indiscernables.
+
+### 5.3 « Sans retraiter l'existant » — la propriété était déjà là
+
+Le sujet demande d'ingérer le nouveau dépôt **par le pipeline incrémental**.
+Aucun développement n'a été nécessaire : la propriété existait, il suffisait
+de la vérifier. Une fois `actes` déclarée comme source connue, un
+`python -m eds.run` sans option ne traite que le jour manquant :
+
+```
+copie lake          (jour=2026-08-29)
+bronze chargé       (jour=2026-08-29, lignes=8112, source=actes)
+référentiel chargé  (jour=2026-08-01, table=bronze.ref_services)
+référentiel chargé  (jour=2026-08-29, table=bronze.ref_ccam)
+```
+
+Les 28 jours antérieurs ne sont ni relus ni recopiés. Silver et gold, eux,
+sont intégralement recalculés — c'est le choix documenté au § 2.7
+(« incrémental en amont, recalcul en aval »), et il prend tout son sens ici :
+une couche dérivée qui se reconstruit n'a pas de migration à subir quand son
+schéma change.
+
+### 5.4 Le premier piège : un référentiel incomplet
+
+> *« Le référentiel de description peut être incomplet : que faites-vous d'un
+> service non décrit ? »*
+
+Le service **NEURO n'est pas décrit** — 7 services sur 8 le sont. Ce n'est pas
+un détail : la Neurologie porte **1 208 séjours et 1 471 actes**, soit 18 %
+de l'activité technique de l'hôpital.
+
+Trois réponses étaient possibles, deux sont mauvaises :
+
+* **L'exclure** (un `INNER JOIN` sur le référentiel de description). C'est ce
+  qui se produit par défaut quand on ne se pose pas la question. 18 % de
+  l'activité disparaît de tout indicateur, et **le total par catégorie ne
+  vaut plus le total de l'hôpital** — un écart de 1 208 séjours que rien ne
+  signale. C'est le mode de défaillance le plus dangereux : silencieux.
+* **Lui inventer des valeurs.** Une capacité moyenne, une catégorie
+  « médecine » par analogie. Le chiffre devient faux sans cesser d'être
+  plausible, ce qui est pire qu'une absence.
+* **Le conserver, en distinguant selon le RÔLE de la colonne.** C'est le
+  choix retenu.
+
+**Catégorie et pôle sont des axes de regroupement.** Ils valent
+`'non renseigné'`. La Neurologie reste comptée, la somme par catégorie fait
+toujours 6 729 séjours, et la lacune du référentiel **se lit dans le
+résultat** au lieu de s'y cacher :
+
+| Catégorie | Séjours | DMS (jours) |
+| --- | --- | --- |
+| medecine | 2 652 | 5,71 |
+| urgences | 1 423 | 2,15 |
+| **non renseigné** | **1 208** | **7,06** |
+| pediatrie | 503 | 3,19 |
+| chirurgie | 476 | 4,39 |
+| reanimation | 467 | 9,05 |
+
+**La capacité en lits est un dénominateur.** Elle reste `NULL`, et
+`kpi_densite_actes_lit` **n'a pas de ligne** pour ce service. Un ratio
+indéfini est absent, jamais nul : publier `0` ferait passer la Neurologie
+pour un service sans plateau technique, ce qui est l'inverse de la vérité.
+
+Cette absence n'est pas une perte silencieuse, parce qu'elle est **chiffrable
+par différence** : `kpi_actes_service` totalise 8 112 actes,
+`kpi_densite_actes_lit` en couvre 6 641, et l'écart de **1 471** est
+exactement l'activité du service non décrit. `tests.verifier` en fait un
+contrôle, et le tableau de bord l'explique à côté du graphe plutôt que de
+laisser le lecteur découvrir un service manquant.
+
+Le résultat net : **la Neurologie figure dans quatre des cinq indicateurs**,
+et n'est absente que de celui dont le dénominateur lui manque.
+
+### 5.5 Le second piège : le service vient du séjour
+
+> *« "Actes par service" : le service est porté par le séjour, pas par
+> l'acte — récupérez-le sans relier deux tables de faits entre elles. »*
+
+Joindre `fact_acte` à `fact_sejour` ligne à ligne serait un **fan trap** : un
+séjour portant trois actes verrait sa durée, son mode d'admission et son
+indicateur de réadmission comptés trois fois. Le § 2.5 documentait déjà ce
+risque pour justifier trois faits distincts plutôt qu'un seul ; il se
+représente ici sous une autre forme.
+
+La parade suit le chemin déjà emprunté par `silver.diagnostics` et
+`silver.monitoring` : **le service est recopié dès silver**, depuis le séjour
+porteur lu dans `bronze.sejours`. `fact_acte` le lit tel quel, et aucune
+jointure entre faits n'existe nulle part dans la construction.
+
+Les indicateurs qui croisent réellement les deux mondes — « nombre moyen
+d'actes par séjour » — agrègent **chaque fait séparément**, puis joignent les
+deux résultats sur `service_code`, une clé de **dimension** :
+
+```sql
+FROM gold_pilotage.dim_service AS d
+LEFT JOIN (SELECT service_code, count() AS nb_actes
+           FROM gold_pilotage.fact_acte GROUP BY service_code) AS a ...
+LEFT JOIN (SELECT service_code, count() AS nb_sejours
+           FROM gold_pilotage.fact_sejour GROUP BY service_code) AS sj ...
+```
+
+Une jointure entre deux agrégats à la même maille ne multiplie aucune ligne.
+C'est la jointure **ligne à ligne** qui est interdite, pas la comparaison — et
+`tests.verifier` le prouve plutôt que de l'affirmer : la somme des
+`nb_sejours` de `kpi_actes_service` vaut **6 729**, le total réel des séjours.
+Si le service avait été récupéré par un croisement fait-à-fait, ce nombre
+serait gonflé du nombre d'actes par séjour, et le contrôle échouerait.
+
+L'indicateur lui-même est exposé en **deux lectures**, parce que « actes par
+séjour » est ambigu : rapporté à *tous* les séjours du service (1,21 en
+moyenne) ou aux seuls séjours ayant reçu un acte (1,59). Un service où un
+séjour sur dix reçoit dix actes et un service où chaque séjour en reçoit un
+donnent la même première mesure et deux secondes très différentes.
+
+### 5.6 Ce que l'étoile devient
+
+Le modèle gagne un quatrième fait et une dimension, et en enrichit une autre.
+
+```
+        dim_patient     dim_service (+ categorie, capacite_lits, pole)     dim_cim10     dim_ccam
+             │                    │                                            │            │
+    ┌────────┼──────────┬─────────┼──────────┬──────────────┐                  │            │
+ fact_sejour │     fact_releve    │   fact_diagnostic ──────┘                  │            │
+             └────────────────────┴───────── fact_acte ───────────────────────────────────┘
+                                             1 ligne = 1 acte réalisé
+```
+
+**`fact_acte` ne porte pas `patient_pseudo`**, contrairement aux trois autres
+faits. Ce n'est pas un oubli. Les trois autres le portent parce qu'un usage
+nommé l'exige : cohortes de patients par pathologie, réadmission, origine
+géographique. **Aucun des cinq indicateurs demandés ne dénombre de
+patients** — ils comptent des actes, des séjours, des lits et des euros.
+Ajouter un pseudonyme « au cas où » contredirait exactement la minimisation
+défendue au § 3.4, où `region_code` n'a été conservé que parce qu'une vue
+d'activité lui donnait un usage. Le séjour reste joignable par `stay_id` si le
+besoin apparaît : ce sera alors une décision, pas un droit déjà distribué.
+
+Le compte de pilotage, lui, n'obtient même pas `stay_id` sur ce fait — il
+relierait deux actes entre eux, et le pilotage analyse des volumes.
+
+**Le tarif vit dans `dim_ccam`, jamais sur le fait.** C'est une donnée de
+facturation : elle change dans le temps sans que les actes déjà réalisés
+changent. Figée sur chaque ligne de fait, une révision tarifaire obligerait à
+réécrire l'historique.
+
+### 5.7 Les cinq indicateurs
+
+| # | Table | Ce qu'elle porte | Résultat |
+| --- | --- | --- | --- |
+| ① | `kpi_activite_categorie` | séjours et DMS par catégorie | 6 catégories, 6 729 séjours au total |
+| ② | `kpi_actes_service` | actes et intensité par service | 8 services, 8 112 actes, 1,21 par séjour |
+| ③ | `kpi_actes_type` | répartition par code CCAM | 8 codes, parts sommant à 100 % |
+| ④ | `kpi_densite_actes_lit` | actes rapportés aux lits | **7 lignes** — URGENCES 86,55 actes/lit |
+| ⑤ | `kpi_facturation_service` | montant T2A par service | 8 services, **2 199 450 €** |
+
+Deux propriétés valent d'être signalées.
+
+**Les tarifs manquants sont comptés, pas absorbés.** Un acte dont le code est
+absent de la nomenclature n'a pas de tarif : il est exclu du montant et
+compté dans `nb_actes_sans_tarif`. Sans cette colonne, un total sous-évalué
+serait indiscernable d'une activité plus faible. Sur ce dépôt, tous les codes
+se résolvent — la colonne vaut 0 partout, et c'est démontré par injection
+plutôt que constaté.
+
+**Chaque table est confrontée à son recalcul depuis les faits.** Une table
+d'indicateur est une copie dérivée : elle peut diverger. Les cinq nouvelles
+rejoignent donc le harnais du § 2.10, et dix-sept contrôles supplémentaires
+vérifient ce qui leur est propre — conservation des totaux, absence de ligne
+pour un dénominateur inconnu, écart chiffré avec les services non décrits.
+
+### 5.8 La qualité des actes, démontrée sur des règles qui ne servent pas
+
+`silver.actes` applique aux actes les règles déjà en vigueur pour les
+diagnostics et les relevés, avec trois motifs de quarantaine :
+`sejour_inconnu`, `sejour_ecarte`, `acte_hors_sejour`. Le contrôle
+physiologique n'a pas d'objet ici ; l'ordre et l'exclusivité mutuelle des
+trois autres sont ceux du § 2.8.
+
+**Aucun n'attrape la moindre ligne sur ce dépôt** : 8 112 actes, aucun séjour
+orphelin, aucun code hors nomenclature, aucun acte hors de la fenêtre de son
+séjour. Une règle qu'aucune donnée n'exerce n'étant pas une preuve, six actes
+fautifs sont injectés dans `tests.demontrer qualite` — deux hors fenêtre, un
+orphelin, un sans patient identifié, un sur un séjour temporellement
+incohérent, un à code inconnu — puis l'entrepôt est remis en état.
+
+Les 82 actes portés par les 68 séjours à incohérence temporelle sont
+**conservés**, avec `sejour_coherent = 0` : la décision de l'intervenant
+rapportée au § 2.8 vaut pour les actes comme pour les relevés. Un acte
+réalisé reste un acte réalisé, quelle que soit la qualité de saisie des deux
+dates qui encadrent le séjour.
+
+### 5.9 Deux défauts trouvés en chemin
+
+**Un repli mort depuis l'origine.** `coalesce(c.libelle, 'inconnu')` après un
+`LEFT JOIN` ne se déclenche jamais : avec `join_use_nulls = 0` — le défaut de
+ClickHouse — une absence de correspondance remplit une colonne `String` avec
+la **chaîne vide**, pas avec `NULL`. Le code documentait déjà ce piège et s'en
+prémunissait pour le drapeau `sejour_coherent` (`sj.stay_id != ''`, jamais
+`IS NOT NULL`), mais les deux enrichissements par libellé y échappaient : un
+service absent de `ref_services` ou un code CIM-10 absent de `ref_cim10`
+aurait produit un libellé **vide**, jamais « inconnu ». Corrigé aux trois
+endroits en testant la clé de jointure. Aucun changement de comportement sur
+ce dépôt — tous les codes s'y résolvent — mais le défaut ne se serait
+manifesté que le jour d'un référentiel incomplet, c'est-à-dire précisément le
+cas que cette évolution introduit. C'est la démonstration à code inconnu qui
+l'a révélé.
+
+**Une partition indestructible.** Les actes de démonstration étaient d'abord
+injectés au 28 août, comme ceux du monitoring. Or la remise en état ne
+recharge que les partitions **dont la source existe**, et `actes` n'a de dépôt
+qu'au 29 : ces lignes survivaient à la démonstration, invisibles au contrôle
+« aucune ligne de démonstration ne subsiste » qui ne les cherchait pas encore.
+Le jour de dépôt des injections est désormais celui de la source réelle,
+l'horodatage de l'acte restant au 28 — un acte antérieur à son dépôt est ici
+le cas normal.
+
+### 5.10 Ce qu'il a fallu accepter
+
+**Faire évoluer une table gold demande de la supprimer une fois.**
+`30_gold.sql` n'exécute que des `CREATE TABLE IF NOT EXISTS`, qui n'ajoutent
+pas les colonnes nouvelles à une table déjà présente : `dim_service` a dû être
+supprimée pour être reconstruite avec `categorie`, `capacite_lits` et `pole`.
+C'est sans perte — gold est intégralement dérivé de silver, et se reconstruit
+en une exécution — mais c'est une manipulation manuelle, à faire une fois, que
+le pipeline ne prend pas en charge. Une évolution ultérieure du schéma gold
+demandera le même geste. L'alternative, un `ALTER TABLE ... ADD COLUMN IF NOT
+EXISTS` par colonne, ajouterait une migration versionnée à maintenir pour une
+couche qui n'a précisément aucune migration à subir : le geste manuel a été
+préféré, mais il doit être connu.
+
+**Le pipeline émet davantage d'avertissements.** `charger_bronze_jour`
+journalise `source absente` pour chaque jour sans dépôt d'une source donnée.
+`actes` n'étant déposée qu'une fois, elle en produit 28 à chaque exécution
+complète, portant le total de 29 à 57. Le motif préexistait — `patients` en
+produisait déjà 26 — mais le volume double, et un `WARNING` qui décrit une
+situation parfaitement normale use le signal. Les faire passer en `INFO`
+change le comportement de journalisation décrit au § 4.3 : le point est
+signalé plutôt que tranché unilatéralement.
+
+**Un garde-fou reste à poser.** `copier_jour` recopie à l'octet toute source
+sans transformation déclarée. La liste blanche de `_ligne_patient` protège
+explicitement `patients` contre une colonne identifiante que le CHU
+ajouterait demain ; `actes` n'a pas cet équivalent. Le fichier ne porte
+aujourd'hui que `stay_id`, `code_ccam` et `acte_ts` — vérifié — mais un
+`patient_id` ajouté à la source traverserait le lake en clair. Le contrôle
+manque, et son absence est une dette assumée, pas un oubli.
+
+### 5.11 Ce que cette évolution apprend
+
+Le sujet dit « sans tout refaire, sans rien casser ». Les deux moitiés n'ont
+pas coûté la même chose.
+
+**Ne rien casser n'a rien coûté**, et c'est le résultat le plus net. Aucun
+indicateur de la première livraison n'a bougé — la DMS en réanimation vaut
+toujours 9,05 jours, le case-mix et la prévalence sont inchangés,
+`tests.verifier conformite` reste au vert face aux valeurs de référence de
+l'intervenant. Non parce que la modification était petite, mais parce que
+l'entrepôt était déjà instrumenté : les contrôles existaient avant d'être
+nécessaires, et c'est eux qui ont permis de modifier sans crainte plutôt que
+de vérifier après coup.
+
+**Ne pas tout refaire, en revanche, s'est décidé.** La tentation était réelle
+de traiter la Partie II comme un projet séparé — un second entrepôt, un second
+code. C'est précisément ce qui aurait rendu la non-régression indémontrable :
+deux codes différents donnant deux résultats ne prouvent rien. Un seul
+entrepôt, augmenté, est ce qui permet d'affirmer que les anciens chiffres sont
+les mêmes — et de le prouver.
+
+Enfin, les deux défauts du § 5.9 n'ont pas été trouvés par relecture. Ils sont
+sortis d'une démonstration écrite pour prouver une règle qui ne servait à
+rien : le repli mort ne s'est manifesté que sur un code CCAM inventé pour
+l'occasion. Une règle qui ne s'exerce sur aucune donnée réelle n'est pas du
+zèle — c'est le seul endroit où un défaut latent devient visible avant qu'un
+dépôt futur ne le rende coûteux.
