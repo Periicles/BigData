@@ -55,6 +55,22 @@ SEUILS_ALERTE_DEFAUT = {
     "temp_haute": "38.5",  # °C
 }
 
+# Langue d'affichage de Metabase. Ce n'est pas un réglage cosmétique : elle
+# commande le FORMAT DES NOMBRES. En anglais, 8 112 actes s'affichent
+# « 8,112 » et 2 199 450 € « 2,199,450 » — une virgule qu'un lecteur français
+# lit comme un séparateur décimal. En français, l'espace insécable sépare les
+# milliers et la virgule reste décimale.
+#
+# Par défaut le français, puisque tout le rendu l'est. `MB_LOCALE=en` dans
+# `.env` suffit à repasser l'instance en anglais : c'est une préférence de
+# lecture, elle n'a pas à vivre dans le code.
+LANGUE_METABASE_DEFAUT = "fr"
+
+# Les codes que Metabase accepte réellement. Une valeur hors liste serait
+# refusée par son API avec un message peu clair : autant refuser ici, à la
+# frontière, comme pour les seuils.
+LANGUES_METABASE = ("fr", "en")
+
 _NOMBRE = re.compile(r"-?\d+(?:\.\d+)?")
 
 
@@ -100,3 +116,15 @@ def seuils_alerte() -> dict[str, str]:
             )
         seuils[nom] = valeur
     return seuils
+
+
+def langue_metabase() -> str:
+    """Langue d'affichage de Metabase, surchargeable par `MB_LOCALE`."""
+    _charger_env()
+    valeur = os.environ.get("MB_LOCALE", "").strip().lower() or LANGUE_METABASE_DEFAUT
+    if valeur not in LANGUES_METABASE:
+        raise RuntimeError(
+            f"Langue Metabase invalide : MB_LOCALE={valeur!r} "
+            f"(attendu : {' ou '.join(LANGUES_METABASE)})."
+        )
+    return valeur

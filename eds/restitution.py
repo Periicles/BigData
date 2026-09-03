@@ -92,7 +92,7 @@ import urllib.error
 import urllib.request
 
 from eds import journal as mod_journal
-from eds.config import exiger
+from eds.config import exiger, langue_metabase
 
 LOG = logging.getLogger("eds.restitution")
 
@@ -1373,21 +1373,23 @@ def _purger_une_passe(client: ClientMetabase) -> int:
 
 
 def poser_langue(client: ClientMetabase) -> None:
-    """Met l'instance en français.
+    """Aligne la langue de l'instance sur `MB_LOCALE` (français par défaut).
 
     Ce n'est pas un réglage cosmétique. Metabase formate les NOMBRES selon la
     langue : en anglais, 8 112 actes s'affichent « 8,112 » et 2 199 450 €
     « 2,199,450 » — une virgule qui, dans un document français, se lit comme
-    un séparateur décimal. Un tableau de bord annexé à un rapport en français
-    ne doit pas obliger son lecteur à réinterpréter chaque chiffre.
+    un séparateur décimal.
 
-    `site-locale` est un réglage d'instance : il vaut pour tous les comptes,
-    et n'a donc pas à être reposé à chaque connexion.
+    `site-locale` est un réglage d'INSTANCE : il vaut pour tous les comptes,
+    et n'a donc pas à être reposé à chaque connexion. Il est relu avant d'être
+    écrit — un `PUT` inconditionnel marcherait, mais journaliser un changement
+    qui n'en est pas un rendrait le journal trompeur.
     """
-    if client.get("/api/setting/site-locale") == "fr":
+    voulue = langue_metabase()
+    if client.get("/api/setting/site-locale") == voulue:
         return
-    client.put("/api/setting/site-locale", {"value": "fr"})
-    LOG.info("langue de l'instance : français")
+    client.put("/api/setting/site-locale", {"value": voulue})
+    LOG.info("langue de l'instance : %s", voulue)
 
 
 def provisionner(client: ClientMetabase) -> dict[str, int]:

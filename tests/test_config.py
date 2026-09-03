@@ -107,3 +107,32 @@ def test_les_sources_connues_couvrent_le_depot_et_son_evolution():
     assert set(config.SOURCES_CONNUES) == {
         "patients", "sejours", "diagnostics", "monitoring", "actes", "referentiels",
     }
+
+
+# ── Langue de restitution ────────────────────────────────────────────────
+def test_langue_par_defaut_est_le_francais(env_vierge):
+    """Tout le rendu est en français : l'interface qui l'accompagne doit
+    formater les nombres de la même façon."""
+    assert config.langue_metabase() == "fr"
+
+
+@pytest.mark.parametrize("valeur,attendu", [("en", "en"), ("EN", "en"), ("  fr  ", "fr")])
+def test_langue_se_surcharge_et_se_normalise(env_vierge, monkeypatch, valeur, attendu):
+    monkeypatch.setenv("MB_LOCALE", valeur)
+    assert config.langue_metabase() == attendu
+
+
+def test_langue_vide_retombe_sur_le_defaut(env_vierge, monkeypatch):
+    """`MB_LOCALE=` dans un `.env` est une ligne laissée sans valeur, pas une
+    demande de langue vide."""
+    monkeypatch.setenv("MB_LOCALE", "")
+    assert config.langue_metabase() == "fr"
+
+
+@pytest.mark.parametrize("refusee", ["de", "fr_FR", "français", "en;DROP"])
+def test_langue_hors_liste_est_refusee(env_vierge, monkeypatch, refusee):
+    """Metabase refuserait la valeur avec un message peu clair : le refus a
+    lieu ici, à la frontière, comme pour les seuils d'alerte."""
+    monkeypatch.setenv("MB_LOCALE", refusee)
+    with pytest.raises(RuntimeError, match="Langue Metabase invalide"):
+        config.langue_metabase()
