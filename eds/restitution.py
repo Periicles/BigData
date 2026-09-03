@@ -42,10 +42,11 @@ Propriétés garanties :
                 `tests.demontrer restitution`, qui le calcule EN DIRECT contre
                 l'entrepôt plutôt que contre une constante figée.
 
-Ce qui a été VÉRIFIÉ EMPIRIQUEMENT contre Metabase 0.56.13 (l'API de cette
+Ce qui a été VÉRIFIÉ EMPIRIQUEMENT contre Metabase 0.58.32 (l'API de cette
 version n'est pas documentée dans ce contexte, donc rien ci-dessous n'est
-deviné — chaque point a été rejoué en pratique, y compris sur une instance
-jetable pour ne rien risquer sur celle qui tourne) :
+deviné — chaque point a été rejoué en pratique, à l'exception signalée
+ci-dessous, y compris sur une instance jetable pour ne rien risquer sur celle
+qui tourne) :
 
   - POST /api/setup renvoie DIRECTEMENT {"id": <session>} : pas de login
     séparé après le tout premier démarrage.
@@ -54,11 +55,12 @@ jetable pour ne rien risquer sur celle qui tourne) :
     contrairement à ce qu'on pourrait attendre. Le signal fiable est
     l'échec (ou le succès) d'une connexion normale via POST /api/session.
   - "view-data": "blocked" (blocage total d'une base pour un groupe) exige un
-    jeton premium — l'API répond explicitement "The blocked permissions
-    functionality is only enabled if you have a premium token with the
-    advanced-permissions feature." L'édition gratuite offre en revanche
-    "legacy-no-self-service" : la base n'est plus parcourable ni
-    interrogeable par le groupe, sans les fonctions payantes.
+    jeton premium : l'API répond "The blocked permissions functionality is
+    only enabled if you have a premium token with the advanced-permissions
+    feature." Relevé en 0.56.13 et NON rejoué en 0.58.32 — le code n'emprunte
+    pas ce chemin. Celui qu'il emprunte, "legacy-no-self-service", reste lui
+    vérifié de bout en bout par `tests.demontrer restitution` : la base n'est
+    plus parcourable ni interrogeable par le groupe, sans fonction payante.
   - Un groupe nouvellement créé hérite par défaut d'un accès "unrestricted" à
     TOUTES les bases existantes — il faut le restreindre explicitement,
     jamais supposer qu'il part fermé.
@@ -67,11 +69,16 @@ jetable pour ne rien risquer sur celle qui tourne) :
     n'expose pas de réinitialisation admin par cette voie ; le mot de passe
     n'est donc posé qu'à la création de l'utilisateur.
   - Les noms de groupe sont uniques côté serveur (un doublon est refusé en
-    400) ; DELETE /api/permissions/group/:id n'existe pas ("API endpoint does
-    not exist"). Les bases, elles, n'ont AUCUNE contrainte d'unicité sur le
-    nom : un doublon y est possible (observé en pratique sur l'instance de ce
-    projet, résidu d'essais manuels antérieurs) et la purge est donc
-    nécessaire pour cet objet-là.
+    400 : "A group with that name already exists."). Les bases, elles,
+    n'ont AUCUNE contrainte d'unicité sur le nom : deux bases homonymes se
+    créent sans erreur (rejoué en 0.58.32, et déjà observé sur l'instance de
+    ce projet, résidu d'essais manuels antérieurs). C'est pourquoi la purge
+    des doublons ne vise que cet objet-là.
+  - DELETE /api/permissions/group/:id EXISTE en 0.58.32 et répond 204 — ce
+    n'était pas le cas en 0.56.13 ("API endpoint does not exist"). Rien n'en
+    dépend ici : les groupes sont recherchés avant création, jamais
+    supprimés. Le noter évite qu'un lecteur croie la contrainte toujours en
+    vigueur.
 """
 
 from __future__ import annotations

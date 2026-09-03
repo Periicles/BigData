@@ -38,7 +38,10 @@ services:
   # un réglage de l'outil — c'est le moteur qui refuse, et le retirer de
   # Metabase ne rendrait rien de plus visible.
   metabase:
-    image: metabase/metabase:v0.56.13
+    # Ligne LTS, patch épinglé : correctifs de sécurité sans dérive
+    # fonctionnelle. Un tag mouvant (`latest`, `v0.58-lts`) ferait diverger
+    # deux clones du dépôt pris à deux dates.
+    image: metabase/metabase:v0.58.32
     container_name: eds-metabase
     environment:
       # Le pilote ClickHouse est livré AVEC l'image depuis Metabase 0.50 : il

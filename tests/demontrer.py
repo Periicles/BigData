@@ -210,7 +210,7 @@ def cloisonnement() -> list[str]:
 # démonstration au niveau de L'INTERFACE — c'est ici, contre l'API Metabase,
 # avec les comptes applicatifs posés par `eds.restitution`.
 #
-# Vérifié EMPIRIQUEMENT contre Metabase 0.56.13, édition gratuite (même
+# Vérifié EMPIRIQUEMENT contre Metabase 0.58.32, édition gratuite (même
 # démarche que l'en-tête de eds/restitution.py) : GET /api/database liste
 # TOUJOURS les deux connexions à tout compte connecté — masquer un NOM de
 # base ("blocked") exige un jeton premium, refusé en pratique par cette
