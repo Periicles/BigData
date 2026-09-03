@@ -1,11 +1,15 @@
 # Rapport de conception — Entrepôt de Données de Santé
 
-CHU · Module Big Data M2 · Épreuve E05
+CHU · Module Big Data M2 · Épreuve E05 · BC05, compétences C27 → C31
 
-Ce dossier expose le besoin, les choix d'architecture et ce qu'ils produisent.
-Le lancement, la journalisation, la reprise sur incident et la maintenance font
-l'objet d'un document séparé : le
-[**guide d'exploitation**](EXPLOITATION.md).
+Ce rapport couvre l'intégralité du rendu. La **partie 1** expose le besoin,
+l'architecture et ce qu'elle produit — indicateurs, tableaux de bord, limites.
+La **partie 2** traite l'automatisation, la journalisation, la traçabilité et
+la conduite au quotidien. La **partie 3** traite l'évolution demandée par le
+CHU après la première livraison. Le rapport se clôt sur la validation des
+chiffres, puis sur ce que le projet nous a appris.
+
+Le dépôt lui-même est décrit dans le [README](../README.md).
 
 - [Partie 1 — L'interface d'analyse](#partie-1-linterface-danalyse)
   - [1. Le besoin](#1-le-besoin)
@@ -33,20 +37,31 @@ l'objet d'un document séparé : le
   - [8. Limites et recommandations](#8-limites-et-recommandations)
     - [8.1 Limites](#81-limites)
     - [8.2 Recommandations](#82-recommandations)
-- [Partie 2 — L'évolution demandée par le CHU](#partie-2-lévolution-demandée-par-le-chu)
-  - [9. La demande](#9-la-demande)
-    - [9.1 Ce que le CHU demande, et ce qui change](#91-ce-que-le-chu-demande-et-ce-qui-change)
-    - [9.2 Un référentiel n'est pas un jour de dépôt](#92-un-référentiel-nest-pas-un-jour-de-dépôt)
-    - [9.3 « Sans retraiter l'existant » — la propriété était déjà là](#93-sans-retraiter-lexistant-la-propriété-était-déjà-là)
-  - [10. Les deux pièges](#10-les-deux-pièges)
-    - [10.1 Le premier piège : un référentiel incomplet](#101-le-premier-piège-un-référentiel-incomplet)
-    - [10.2 Le second piège : le service vient du séjour](#102-le-second-piège-le-service-vient-du-séjour)
-  - [11. Le modèle après l'évolution](#11-le-modèle-après-lévolution)
-    - [11.1 Un quatrième fait, une dimension de plus](#111-un-quatrième-fait-une-dimension-de-plus)
-    - [11.2 La qualité des actes, démontrée sur des règles qui ne servent pas](#112-la-qualité-des-actes-démontrée-sur-des-règles-qui-ne-servent-pas)
-  - [12. Les nouveaux indicateurs](#12-les-nouveaux-indicateurs)
-    - [12.1 Ce qu'ils portent, et ce qu'ils prouvent](#121-ce-quils-portent-et-ce-quils-prouvent)
-    - [12.2 Ce qu'il a fallu accepter](#122-ce-quil-a-fallu-accepter)
+- [Partie 2 — L'automatisation](#partie-2-lautomatisation)
+  - [9. Ce qui déclenche le pipeline](#9-ce-qui-déclenche-le-pipeline)
+  - [10. Ce qui se passe quand ça échoue](#10-ce-qui-se-passe-quand-ça-échoue)
+  - [11. La journalisation](#11-la-journalisation)
+  - [12. La traçabilité, de bout en bout](#12-la-traçabilité-de-bout-en-bout)
+  - [13. Utilisation et maintenance](#13-utilisation-et-maintenance)
+- [Partie 3 — L'évolution du besoin](#partie-3-lévolution-du-besoin)
+  - [14. La demande](#14-la-demande)
+    - [14.1. Ce que le CHU demande, et ce qui change](#141-ce-que-le-chu-demande-et-ce-qui-change)
+    - [14.2. Un référentiel n'est pas un jour de dépôt](#142-un-référentiel-nest-pas-un-jour-de-dépôt)
+    - [14.3. « Sans retraiter l'existant » — la propriété était déjà là](#143-sans-retraiter-lexistant-la-propriété-était-déjà-là)
+  - [15. Les deux pièges](#15-les-deux-pièges)
+    - [15.1. Le premier piège : un référentiel incomplet](#151-le-premier-piège-un-référentiel-incomplet)
+    - [15.2. Le second piège : le service vient du séjour](#152-le-second-piège-le-service-vient-du-séjour)
+  - [16. Le modèle après l'évolution](#16-le-modèle-après-lévolution)
+    - [16.1. Un quatrième fait, une dimension de plus](#161-un-quatrième-fait-une-dimension-de-plus)
+    - [16.2. La qualité des actes, démontrée sur des règles qui ne servent pas](#162-la-qualité-des-actes-démontrée-sur-des-règles-qui-ne-servent-pas)
+  - [17. Les nouveaux indicateurs](#17-les-nouveaux-indicateurs)
+    - [17.1. Ce qu'ils portent, et ce qu'ils prouvent](#171-ce-quils-portent-et-ce-quils-prouvent)
+    - [17.2. Ce qu'il a fallu accepter](#172-ce-quil-a-fallu-accepter)
+- [Validation des chiffres](#validation-des-chiffres)
+  - [L'équation de conservation, couche par couche](#léquation-de-conservation-couche-par-couche)
+  - [Les indicateurs, confrontés à leur recalcul depuis les faits](#les-indicateurs-confrontés-à-leur-recalcul-depuis-les-faits)
+  - [Confrontation aux valeurs de référence de l'intervenant](#confrontation-aux-valeurs-de-référence-de-lintervenant)
+  - [Ce que cette validation ne couvre pas](#ce-que-cette-validation-ne-couvre-pas)
 - [Ce que ce projet nous a appris](#ce-que-ce-projet-nous-a-appris)
   - [Un contrôle peut être juste et ne rien contrôler](#un-contrôle-peut-être-juste-et-ne-rien-contrôler)
   - [Une règle qui n'attrape rien doit quand même être démontrée](#une-règle-qui-nattrape-rien-doit-quand-même-être-démontrée)
@@ -61,10 +76,8 @@ l'objet d'un document séparé : le
 
 # Partie 1 — L'interface d'analyse
 
-> Cette partie décrit l'entrepôt tel qu'il a été livré initialement, sur les
-> cinq flux du sujet. Le CHU a demandé ensuite une évolution : elle fait
-> l'objet de la partie 2, qui s'ajoute à celle-ci **sans la remplacer**. Les
-> deux étapes sont tenues séparées pour qu'on voie ce que chacune a coûté.
+> Le besoin, les sources, l'architecture et ce qu'elle produit : les
+> indicateurs, les tableaux de bord, et les limites de ce qui est livré.
 
 ## 1. Le besoin
 
@@ -669,7 +682,7 @@ définition a changé (§ 5) :
 
 ## 5. Le modèle
 
-Le § 6 décrit gold comme des « indicateurs par usage » — une table par
+Le § 6 du sujet décrit gold comme des « indicateurs par usage » — une table par
 indicateur. C'est le chemin de lecture le plus direct, et il correspond au
 besoin courant : la direction consulte une DMS, elle ne compose pas une
 requête. Mais pris seul, ce raccourci a un défaut rédhibitoire : **il fige les
@@ -1291,22 +1304,422 @@ propres à Metabase, distinctes de celles de l'entrepôt ci-dessus :
 | Basse     | Mettre en place une purge automatique selon les durées de conservation, actuellement non définies par le CHU.                                                                                      |
 | Basse     | Instaurer une revue périodique des habilitations Metabase et ClickHouse — qui appartient à quel groupe, quel compte a quel mot de passe — pour qu'un départ ou un changement de poste se traduise sans délai par un accès retiré. |
 
----
+# Partie 2 — L'automatisation
 
-# Partie 2 — L'évolution demandée par le CHU
+> Ce que le sujet nomme sa seconde partie : la collecte et la transformation
+> planifiées, la gestion des erreurs, la journalisation, la traçabilité — et
+> la conduite au quotidien, jusqu'à la reprise après incident.
 
-> Cette partie s'ajoute à la partie 1. Tout ce qui y est décrit — les cinq
-> flux, les trois faits, les vingt-deux cartes — reste en place et continue de
-> produire les mêmes chiffres. C'est précisément ce que le CHU demandait :
-> *faire évoluer sans tout refaire, et sans rien casser.*
->
-> La numérotation **continue** celle de la partie 1 : le rapport compte une
-> trentaine de renvois internes, et redémarrer à 1 rendrait chacun d'eux
-> ambigu.
+## 9. Ce qui déclenche le pipeline
 
-## 9. La demande
+```
+10 3 * * *  cd $EDS_HOME && .venv/bin/python -m eds.run >> logs/cron.log 2>&1
+```
 
-### 9.1 Ce que le CHU demande, et ce qui change
+**03h10, et pas un autre horaire.** Le choix est conventionnel : après une
+nuit de dépôt supposée terminée, avant la prise de poste du matin — de sorte
+qu'un incident se découvre en arrivant, jamais en pleine journée de soin. Il
+n'est pas ajusté sur une fenêtre de dépôt observée : le dépôt fourni date
+chaque jour au jour près (`_jour_depot`, type `Date` en bronze — § 3.5), sans
+horodatage intra-journalier, et les fichiers du dépôt courant portent tous la
+même date de fichier, preuve d'une extraction unique plutôt que de dépôts
+échelonnés dans la nuit. Rien dans ce dépôt ne permet donc de mesurer une
+fenêtre réelle ; 03h10 reste une hypothèse à confirmer en production, pas une
+valeur calée sur une observation. L'heure est un paramètre du fichier
+`ops/crontab.example`, pas une constante du code : la déplacer ne touche à
+rien d'autre.
+
+**`cron`, et pas un ordonnanceur applicatif.** Airflow, Dagster ou un service
+managé apportent un graphe de dépendances entre tâches, des reprises
+automatiques et une interface de supervision. Aucun des trois n'a d'usage ici
+: le pipeline est **une seule tâche**, appelée une fois par jour, dont
+l'orchestration interne (`schema` → `lake` → `bronze`, par jour → `referentiels`
+→ `silver` → `gold` → `droits` — sept des huit noms d'étape du § 11, le
+huitième, `restitution`, relevant d'`eds.restitution`) est déjà écrite en
+Python dans `eds/run.py` — le graphe de dépendances
+existe, mais à l'intérieur d'un seul processus, pas entre plusieurs tâches
+cron. Ajouter un ordonnanceur ne changerait aucune de ces dépendances ; il
+ajouterait une base de métadonnées et un serveur web à faire tourner pour
+planifier un appel quotidien. C'est un choix à revoir le jour où plusieurs
+pipelines indépendants doivent se coordonner — pas avant.
+
+**Ce que `cron` ne garantit pas, et ce qu'on met en face.**
+
+| `cron` ne fait pas | Ce qui compense |
+| --- | --- |
+| Reprise automatique après un échec | Rien ne relance seul une exécution en échec — c'est assumé (§ 13) : `cron` retente le lendemain à 03h10, jamais dans l'heure. En attendant, l'échec est explicite (code de sortie non nul) et entièrement tracé (§ 11), pour qu'un humain corrige et relance |
+| Alerte en cas d'échec | Aucune n'est câblée aujourd'hui : la sortie `logs/cron.log` et `ops.executions` sont **passives**, il faut aller les lire. C'est une limite assumée à ce stade (recommandation § 8.2 — brancher un outil de supervision reste à faire) |
+| Dépendance entre tâches | Sans objet ici : une seule ligne crontab, une seule commande. Le graphe interne (`Pipeline.executer`) reste dans le processus Python, pas dans `cron` |
+
+**Le mode par défaut est incrémental, et c'est un choix.** `eds.run` sans
+option calcule `jours_disponibles() − jours_deja_ingeres()` : seuls les jours
+absents de l'entrepôt sont chargés. Un rechargement complet (`--tout`)
+recopierait chaque nuit 28 fichiers pour n'en traiter réellement qu'un — au
+prix, à ce volume, de rester instantané, mais le principe ne tient pas au-delà
+de quelques dizaines de milliers de lignes par jour (§ 8.1, recalcul intégral
+de silver et gold). L'incrémental borne le travail nocturne à ce qui a
+réellement changé.
+
+**Ce qui se passe si un jour manque.** `jours_disponibles()` est l'union des
+répertoires réellement présents sous `source-filestorage/` — pas un
+calendrier attendu. Si le CHU ne dépose rien une nuit, ce jour n'existe
+simplement pas dans la liste : l'exécution suivante n'échoue pas, elle
+**n'a rien à faire** pour ce jour, et se termine normalement. Le jour sera
+repris automatiquement dès qu'il apparaîtra dans le dépôt, sans action
+manuelle — mais rien n'alerte aujourd'hui si le CHU cesse durablement de
+déposer : c'est la même limite que la ligne « pas d'alerte » ci-dessus,
+appliquée à l'absence de dépôt plutôt qu'à l'échec d'un traitement.
+
+## 10. Ce qui se passe quand ça échoue
+
+**Deux familles d'erreurs, parce qu'elles n'appellent pas la même réponse.**
+
+```python
+class ErreurPipeline(Exception):
+    """Échec métier : la relance à l'identique ne changera rien."""
+
+def _est_transitoire(erreur: Exception) -> bool:
+    return isinstance(erreur, OperationalError) or (
+        isinstance(erreur, DatabaseError) and "Connection" in str(erreur)
+    )
+```
+
+Une **panne transitoire** — le moteur ClickHouse qui redémarre, une connexion
+coupée — a de bonnes chances de disparaître d'elle-même en quelques secondes :
+elle est retentée. Une **erreur métier** — `ErreurPipeline`, ou toute erreur
+qui n'est ni une `OperationalError` ni une `DatabaseError` évoquant une
+connexion — ne l'est pas : un jour absent du dépôt, un SQL invalide, une
+partition déjà verrouillée resteront faux à la deuxième tentative comme à la
+première. La retenter ne ferait que perdre du temps et bruiter le journal
+d'un même échec répété trois fois.
+
+`avec_reprises` porte la première famille : **3 tentatives**, avec
+**temporisation exponentielle** — 2 s avant la deuxième, 4 s avant la
+troisième (`ATTENTE_INITIALE_S = 2`, doublée à chaque échec). Les trois
+étapes qui appellent du SQL transformant (`bronze`, `silver`, `gold`) et le
+chargement du schéma en sont enveloppées ; la lecture du lake, elle, échoue
+en `ErreurPipeline` sans retenter, puisqu'un fichier absent le reste.
+
+**Deux preuves réelles, tirées de `ops.executions`, plutôt qu'un cas
+fabriqué.** La classification n'est pas seulement écrite dans le code, elle
+s'observe dans l'historique des exécutions déjà journalisées :
+
+| Étape | Message (tronqué) | Famille | Comportement observé |
+| --- | --- | --- | --- |
+| `lake` | `ErreurPipeline: aucun fichier trouvé pour le 2099-01-01` | métier | échec immédiat, aucune retentative — répété à chaque rejeu de `tests.demontrer reprise`, qui force un jour inexistant |
+| `silver` | `DatabaseError`: … Function with name `` `quote` `` does not exist | définitive (ni `OperationalError`, ni « Connection ») | échec immédiat malgré la classe `DatabaseError` — une erreur SQL réelle rencontrée en développement, pas retentée puisqu'aucune reprise n'aurait changé une fonction inexistante |
+
+Ce que ce tableau ne peut pas montrer, c'est un compte figé : la première
+ligne se réenrichit d'une occurrence à chaque exécution de la démonstration
+citée, et `ops.executions` est un journal qui ne s'efface jamais (§ 11). Au
+moment de la rédaction, la répartition par étape s'obtenait par :
+
+```sql
+SELECT etape, count() AS echecs
+FROM ops.executions WHERE statut = 'echec'
+GROUP BY etape ORDER BY echecs DESC;
+```
+
+```
+lake     72
+silver    2
+gold      1
+```
+
+soit 75 échecs sur 412 exécutions distinctes (`run_id`) — un chiffre voué à
+grossir encore côté `lake` à chaque nouvelle relecture de `tests.demontrer
+reprise`, sans que cela change rien à la classification qu'il illustre.
+
+**La propriété qui rend la reprise triviale : il n'y a rien à restaurer.**
+Bronze est la source de vérité durable — chaque partition (`_jour_depot`) est
+réécrite en entier (`DROP PARTITION` puis rechargement), jamais modifiée en
+place. Silver et gold sont **recalculés intégralement** à chaque passage
+(`TRUNCATE` puis `INSERT` — § 3.3). Le schéma, lui, ne détruit jamais : les
+six fichiers de `SCHEMA` sont tous en `CREATE TABLE IF NOT EXISTS`, rejouables
+sans effet de bord. La conséquence directe : après un échec, **corriger la
+cause et relancer suffit**. Aucune sauvegarde à restaurer, aucun script de
+rattrapage distinct de `eds.run` lui-même.
+
+**Ce que le pipeline garantit après un échec : un entrepôt cohérent, jamais à
+moitié écrit.** `tests.demontrer reprise` le vérifie, pas seulement
+l'affirme. Rejoué à l'instant :
+
+```
+① Jour de dépôt malformé            → code de sortie 1, rejeté avant écriture
+② Jour absent du dépôt du CHU       → code de sortie 1, échec explicite
+③ Traçabilité de l'échec            → présent dans ops.executions
+④ Cohérence après incident          → inchangé : {bronze.sejours: 6797, silver.sejours: 6729, gold_pilotage.fact_sejour: 6729}
+⑤ Reprise par simple relance        → code de sortie 0, entrepôt rétabli à l'identique
+⑥ Chargement partiel                → bronze.monitoring du 2026-08-27 : 321 → 0 → 321 lignes
+```
+
+Le point ⑥ est le cas qui compte réellement : une partition entière de
+`bronze.monitoring` est supprimée pour simuler un jour à moitié chargé — un
+scénario où une source aurait échoué après une autre (§ 9,
+`jours_deja_ingeres`, qui exige que **toutes** les sources d'un jour soient
+présentes, pas seulement `sejours`). Une simple relance de `eds.run` retrouve
+les 321 lignes disparues, sans argument spécial ni intervention : le jour est
+redétecté comme non entièrement ingéré, et rechargé.
+
+## 11. La journalisation
+
+**Deux destinations, parce qu'elles servent deux usages qu'un seul support ne
+couvre pas.** `logs/pipeline.log` est un fichier — une ligne JSON par
+événement, lisible par `tail -f`, par un humain en urgence à 3h du matin
+comme par un outil de collecte de logs (`FormateurJSON`, `eds/journal.py`). Il
+survit même si ClickHouse est indisponible, puisqu'il n'en dépend pas.
+`ops.executions` est une **table** — interrogeable en SQL, jointe aux données
+qu'elle décrit par `_run_id`, agrégeable (compter les échecs par étape,
+mesurer une durée moyenne). Le fichier répond à « que s'est-il passé, dans
+l'ordre ? » ; la table répond à « quelle exécution a produit cette ligne, et
+avec quel bilan ? ». Un seul des deux ne remplirait pas l'autre rôle : un
+fichier ne se `JOIN`-e pas à `bronze.sejours` sur `_run_id`, et une table
+disparaît si le moteur qui la porte est lui-même la panne à diagnostiquer.
+
+**Structure de `ops.executions` :**
+
+| Colonne | Contenu |
+| --- | --- |
+| `run_id` | identifiant de l'exécution, partagé avec `_run_id` dans bronze/silver/gold |
+| `etape` | `schema`, `lake`, `bronze`, `referentiels`, `silver`, `gold`, `droits`, `restitution` |
+| `jour` | jour de dépôt concerné — `NULL` pour les étapes non journalières |
+| `statut` | `succes` ou `echec` |
+| `lignes` | volume traité par l'étape |
+| `duree_s` | durée mesurée |
+| `message` | vide en succès ; type et texte de l'exception en échec, tronqué à 500 caractères |
+| `demarre_a`, `termine_a` | horodatages |
+
+**Une requête d'exploitation utile** — les dernières exécutions, succès comme
+échecs, celle que `docs/RAPPORT.md` et `README.md` recommandent en premier
+réflexe :
+
+```sql
+SELECT demarre_a, run_id, etape, statut, lignes, duree_s, message
+FROM ops.executions ORDER BY demarre_a DESC LIMIT 20;
+```
+
+**Les chiffres réels du journal, au moment de la rédaction :**
+`logs/pipeline.log` compte **42 743 lignes** ; `ops.executions` porte
+**412 exécutions distinctes** (`run_id`), pour **8 étapes** possibles et
+**75 étapes en échec** (§ 10) — le reste en succès. Ces trois chiffres ne
+sont pas figés : chaque relance de `eds.run` ou de `tests.demontrer` ajoute
+ses propres lignes et sa propre exécution, sans jamais rien effacer — c'est
+un journal, pas un instantané. Le fichier de bord accumule une ligne par
+étape et par exécution (accessoirement plus dense que la table pendant le
+développement, où chaque relance de test ajoute ses propres lignes) ; les
+deux destinations restent cohérentes entre elles, puisqu'écrites par le même
+code au même instant (`Pipeline.etape`, § 10).
+
+**Ce qui n'y entre jamais : aucune donnée de santé, aucun pseudonyme, aucun
+mot de passe ni jeton.** Les messages ne portent que des métadonnées
+d'exécution — nom d'étape, jour, compte de lignes, type d'exception. Ce n'est
+pas seulement une promesse de l'en-tête de `eds/journal.py` : `tests.verifier
+rgpd` le vérifie automatiquement, à chaque passage, en balayant le fichier de
+log et la colonne `message` d'`ops.executions` avec un motif qui repère un
+pseudonyme (16 caractères hexadécimaux), un IPP (`IPP` suivi de 7 chiffres)
+ou un NIR (15 chiffres) :
+
+```
+OK     logs/pipeline.log sans identifiant patient
+OK     ops.executions sans identifiant patient
+```
+
+**Le point faible, assumé plutôt que caché.** `_consigner` — la fonction qui
+écrit dans `ops.executions` — est elle-même enveloppée dans un `try/except` :
+
+```python
+except Exception:
+    # Ne jamais faire échouer le pipeline à cause de son propre
+    # journal : le fichier de log reste la trace de secours.
+    LOG.warning("journal ClickHouse indisponible", exc_info=True)
+```
+
+Le choix est délibéré — un journal qui peut faire échouer ce qu'il journalise
+serait pire que l'absence de journal — mais il a un coût : si ClickHouse
+tombe **au moment précis** où une étape se termine, l'écriture dans
+`ops.executions` échoue silencieusement (avertissement seul), et
+`logs/pipeline.log` devient la **seule** trace de cette étape. C'est
+exactement pourquoi les deux destinations coexistent plutôt qu'une seule : le
+fichier ne dépend d'aucun composant que le pipeline lui-même pourrait avoir
+mis en défaut.
+
+## 12. La traçabilité, de bout en bout
+
+Le § 3.5 annonce la propriété : chaque ligne porte son fichier d'origine et
+l'exécution qui l'a produite, en une requête, sans jointure entre couches.
+Voici la démonstration, sur un indicateur réellement affiché — « Passages aux
+urgences (service) », la série journalière du tableau de bord « Pilotage
+hospitalier » — remonté jusqu'au fichier de dépôt et à l'exécution qui l'a
+traité. Chaque étape est **une** requête ; aucune n'en joint deux couches.
+
+**① Le tableau de bord affiche, pour le 1er août, 46 passages.**
+
+```sql
+SELECT jour, nb_passages_urgences FROM gold_pilotage.kpi_urgences_jour
+WHERE jour = '2026-08-01';
+```
+```
+2026-08-01   46
+```
+
+**② Ce chiffre est un `countIf` sur `fact_sejour` — un séjour parmi les
+46, au hasard.**
+
+```sql
+SELECT stay_id FROM gold_pilotage.fact_sejour
+WHERE date_admission = '2026-08-01' AND service_code = 'URGENCES'
+ORDER BY stay_id LIMIT 1;
+```
+```
+S00000445
+```
+
+**③ Ce séjour, en silver, porte déjà son fichier et son exécution — sans
+jointure.**
+
+```sql
+SELECT patient_pseudo, _fichier_source, _run_id, _built_at
+FROM silver.sejours WHERE stay_id = 'S00000445';
+```
+```
+d54c39c15c6fbf94   lake/sejours/2026-08-01/sejours.csv   a444489b6fe0   2026-09-02 21:19:44
+```
+
+**④ La même ligne, en bronze, avant tout nettoyage — même fichier source,
+plus l'horodatage d'ingestion.**
+
+```sql
+SELECT patient_pseudo, _fichier_source, _ingested_at, _run_id
+FROM bronze.sejours WHERE stay_id = 'S00000445';
+```
+```
+d54c39c15c6fbf94   lake/sejours/2026-08-01/sejours.csv   2026-09-02 21:08:35   40ae712db09b
+```
+
+Le `_run_id` diffère entre ③ et ④ (`a444489b6fe0` contre `40ae712db09b`) —
+c'est attendu, pas une anomalie. Bronze est incrémental : cette partition n'a
+plus été touchée depuis son premier chargement, donc son `_run_id` reste
+celui de ce chargement. Silver, lui, est **recalculé intégralement** à chaque
+exécution de `eds.run` (§ 3.3) : son `_run_id`/`_built_at` désignent la
+dernière reconstruction complète de la table, pas la dernière fois que cette
+ligne précise a changé de valeur. Les deux couches partagent toujours
+`_fichier_source` — la chaîne de traçabilité tient sur cette colonne, pas sur
+l'égalité (accidentelle, et non garantie) des `_run_id`. C'est pour la même
+raison que ces valeurs, rejouées après un nouveau `eds.run`, ne seront plus
+celles imprimées ci-dessus : elles décrivent un état observé, pas une
+propriété stable de l'entrepôt.
+
+**⑤ Et l'exécution `40ae712db09b`, à l'étape qui a chargé précisément ce
+fichier, est dans `ops.executions`.**
+
+```sql
+SELECT etape, jour, statut, lignes, duree_s
+FROM ops.executions WHERE run_id = '40ae712db09b' AND etape = 'bronze' AND jour = '2026-08-01';
+```
+```
+bronze   2026-08-01   succes   2487   0.018
+```
+
+De la carte du tableau de bord au fichier `sejours.csv` déposé le 1er août et
+à l'exécution qui l'a chargé en 18 millisecondes, la chaîne tient en cinq
+requêtes, chacune sur une seule table. C'est la réponse concrète à « d'où
+vient cette donnée, et quand a-t-elle été traitée ? » — le § 3.5 en énonçait
+la possibilité ; ce paragraphe l'exécute.
+
+**Pourquoi gold s'arrête à `_run_id` et `_built_at`, sans `_fichier_source`.**
+La chaîne ci-dessus le montre en pratique : dès qu'une investigation atteint
+gold, elle continue avec le compte d'exploitation (§ 3.4), qui lit bronze et
+silver — c'est là, et seulement là, que vit la colonne fichier. Répéter cette
+colonne dans gold n'ajouterait rien qu'un doublon, sur une base dont le compte
+de pilotage n'a de toute façon pas le droit de lire `stay_id`.
+
+## 13. Utilisation et maintenance
+
+**TROIS NIVEAUX DE VÉRIFICATION, ET ILS NE SE REMPLACENT PAS.** Les tests
+unitaires (`pytest`) s'exercent sur les fonctions pures : ils tournent hors
+ligne, en une fraction de seconde, et disent si une transformation est juste
+prise isolément. `tests.verifier` s'exécute contre l'entrepôt vivant et
+confronte chaque indicateur au recalcul depuis les faits : il dit si le
+système est cohérent avec lui-même. `tests.demontrer` écrit dans l'entrepôt,
+injecte des lignes fautives puis le remet en état : il dit si les règles
+FONCTIONNENT, y compris celles qu'aucune donnée réelle n'exerce.
+
+Un test unitaire n'atteindra jamais l'équation de conservation sur 87 443
+lignes, ni le refus prononcé par le moteur. Une suite qui exige Docker ne
+tournera jamais en trois secondes dans une chaîne d'intégration. Les trois
+sont donc gardés.
+
+**Commandes d'exploitation courantes :**
+
+| Besoin | Commande | Effet |
+| --- | --- | --- |
+| Lancement quotidien (celui du cron) | `.venv/bin/python -m eds.run` | incrémental : ingère les seuls jours absents, reconstruit silver et gold, réapplique les droits |
+| Rejeu d'un jour précis | `.venv/bin/python -m eds.run --jour 2026-08-27` | réécrit sa partition bronze (`DROP PARTITION` puis rechargement) ; sans effet sur les autres jours |
+| Rechargement complet | `.venv/bin/python -m eds.run --tout` | relit les 28 jours ; nécessaire après un changement de jeu de données source, jamais après un simple incident (§ 10) |
+| État de l'entrepôt, sans rien modifier | `.venv/bin/python -m eds.run --etat` | jours ingérés/en attente, volumes par couche, cinq dernières étapes |
+| Provisionnement de la restitution | `.venv/bin/python -m eds.restitution` | (re)crée connexions, comptes, droits et tableaux de bord Metabase — idempotent, ~6 s au premier passage, ~1,2 s ensuite |
+| État de Metabase, sans rien modifier | `.venv/bin/python -m eds.restitution --etat` | connexions et tableaux de bord déjà provisionnés |
+| Tests unitaires, hors ligne | `.venv/bin/python -m pytest` | 85 tests sur les fonctions pures — pseudonymisation, découpage SQL, résolution des référentiels, seuils. **Ne demandent ni Docker ni entrepôt**, et s'exécutent en moins d'une seconde |
+| Contrôle des 428 propriétés | `.venv/bin/python -m tests.verifier` | rejoue les cinq sections de vérification (dont `conformite`, § 6) |
+| Démonstrations rejouables | `.venv/bin/python -m tests.demontrer` | dont `reprise` (§ 10) et `restitution` (cloisonnement vu depuis Metabase) |
+
+**Deux exécutions mesurées à l'instant, pour donner un ordre de grandeur
+réel plutôt qu'un chiffre relu ailleurs.** Une exécution sans nouveau jour
+à ingérer (`schema` + `referentiels` + `silver` + `gold` + `droits`) prend
+**0,24 s** au total sur ce dépôt (0,021 + 0,008 + 0,095 + 0,092 + 0,02, run
+`e4cd6aeb2e18`) ; la charge initiale des 28 jours prend, elle, environ 1,5 s
+— c'est ce second chiffre que mesure le démarrage décrit au README. Le
+provisionnement Metabase suit le même contraste : ~6 s la première fois qu'il
+crée tout, ~1,2 s ensuite quand il ne fait que réconcilier l'existant.
+
+**Reprise sur incident — symptôme, cause, correction.** Le tableau ci-dessous
+reprend celui du README et le complète des cas rencontrés depuis, notamment
+en développement (colonne « Origine ») :
+
+| Symptôme | Cause | Correction | Origine |
+| --- | --- | --- | --- |
+| `ClickHouse ne voit pas le lake` | Le répertoire `lake/` a été supprimé : le montage Docker pointe sur un inode disparu | `docker compose restart clickhouse` | `eds.run`, contrôle explicite avant lecture |
+| `Connection reset by peer` / toute `OperationalError` | ClickHouse redémarre | Aucune — reprise automatique, temporisation 2 s puis 4 s (§ 10) | classification `_est_transitoire` |
+| Erreur SQL non liée à une connexion (ex. `Function ... does not exist`) | Un fichier `.sql` a été modifié avec une erreur de syntaxe ou une fonction inexistante | **Pas de reprise automatique** : corriger le SQL, puis relancer | observé en développement (§ 10), 3 occurrences dans `ops.executions` |
+| `Variable d'environnement manquante` | `.env` absent ou incomplet | Copier `.env.example` en `.env` et renseigner la valeur manquante — `eds.config.exiger` nomme précisément la variable en cause dans le message d'erreur | `eds.config.exiger` |
+| `argument invalide` | Jour mal formé en ligne de commande | Utiliser le format `AAAA-MM-JJ` | validation avant toute connexion (`valider_jour`) |
+| `aucun fichier trouvé pour le …` | Jour absent du dépôt du CHU | Vérifier `eds-chu-sujet/source-filestorage/` ; sans action, le jour sera repris de lui-même dès son dépôt (§ 9) | `ErreurPipeline`, 72 occurrences dans `ops.executions` (dont la démonstration `tests.demontrer reprise`, rejouable, § 10) |
+| `Unknown expression identifier` sur une colonne | Un DDL a été modifié : `CREATE TABLE IF NOT EXISTS` **ne migre pas** un schéma existant | `DROP TABLE …` sur la table concernée, puis relancer le pipeline | § 10, propriété « rien à restaurer » |
+| `Metabase ne répond pas sur /api/health après …s` | Conteneur `metabase` non démarré, ou JVM encore en cours de démarrage (~1 min la première fois) | `docker compose up -d metabase`, puis `docker compose logs metabase` si l'attente échoue malgré tout | `eds.restitution`, mêmes codes de sortie que `eds.run` (1 / 2) |
+| `connexions` / `tableaux de bord Metabase absents` | `eds.restitution` n'a jamais été rejoué contre cette instance | `.venv/bin/python -m eds.restitution` | `tests.demontrer restitution` |
+| `valeurs de référence absentes, section ignorée` | `eds-chu-sujet/corrige-kpi-niveau1.json` n'est pas sur cette machine (fichier non versionné, § 6) | Aucune correction : la section `conformite` est **volontairement** ignorée plutôt que de faire échouer le reste de la suite (§ 6) | `tests.verifier conformite` |
+| `Ports are not available` sur Metabase | Le port `3000` est déjà occupé | Libérer le port (`lsof -i :3000`) ou republier Metabase sur un autre port | `docker-compose.yml` |
+
+**Ce qu'un exploitant fait, dans l'ordre, le matin où le pipeline a échoué
+pendant la nuit :**
+
+1. **Lire `logs/cron.log`** — c'est la sortie brute de la commande cron, distincte du journal structuré : elle révèle une panne *système* (Python absent, disque plein, conteneur arrêté) qu'`ops.executions` ne verrait pas, puisque le pipeline n'aurait alors même pas pu s'y écrire.
+2. **Interroger `ops.executions`** pour la nuit concernée (la requête du § 11) — identifier l'étape en échec, son message, et si l'exécution a été retentée (§ 10).
+3. **Chercher le symptôme dans le tableau ci-dessus** — la cause et la correction sont connues pour les cas déjà rencontrés.
+4. **Corriger la cause**, jamais l'effet — pas de tentative de réparer une table à la main : ce serait contredire la propriété du § 2.
+5. **Relancer `eds.run`** sans option : idempotent, il retrouve tout seul ce qui manque (jour absent, partition incomplète — § 10, point ⑥).
+6. **Vérifier avec `eds.run --etat`**, puis `tests.verifier` — 428 contrôles, dont la conformité aux valeurs de référence si le fichier est présent sur cette machine.
+7. **Si l'incident touchait la restitution**, relancer `eds.restitution` — les tableaux de bord ne se resynchronisent pas tout seuls avec un entrepôt corrigé.
+
+**Remise à zéro complète** (destructif — l'entrepôt et Metabase sont
+reconstruits intégralement, réservé à un incident qu'aucune correction ciblée
+ne résout) :
+
+```bash
+docker compose down -v && docker compose up -d
+.venv/bin/python -m eds.run --tout
+.venv/bin/python -m eds.restitution   # -v supprime aussi metabase-data
+```
+
+# Partie 3 — L'évolution du besoin
+
+> Le CHU a déposé de nouvelles données après la première livraison. Cette
+> partie s'ajoute aux deux précédentes **sans les remplacer** : tout ce qu'elles
+> décrivent reste en place et continue de produire les mêmes chiffres.
+
+## 14. La demande
+
+### 14.1. Ce que le CHU demande, et ce qui change
 
 Le 29 août 2026, le CHU dépose de nouvelles données et formule une consigne
 en une phrase : *« faites évoluer votre entrepôt — sans tout refaire, sans
@@ -1324,15 +1737,14 @@ lit, montant facturé (T2A). Le sujet énonce lui-même les deux pièges à
 éviter, et c'est autour d'eux que s'organisent les choix qui suivent.
 
 **Aucune section précédente de ce dossier n'a été réécrite.** Les chiffres
-des § 1 à § 3, et ceux du guide d'exploitation, décrivent l'entrepôt tel qu'il
-était à la première livraison,
+des § 1 à § 13 décrivent l'entrepôt tel qu'il était à la première livraison,
 et restent exacts pour ce périmètre. Deux totaux, en revanche, incluent
 désormais les actes : bronze passe de **79 316 à 87 443 lignes**
 (§ 4.4), silver de 66 369 à **74 481**, et le lake de 89 à 92 fichiers.
 Le tableau des sources du § 2.1 marque les référentiels « 1er jour » ; ils
-arrivent maintenant en **deux dépôts**, ce dont traite le § 9.2.
+arrivent maintenant en **deux dépôts**, ce dont traite le § 14.2.
 
-### 9.2 Un référentiel n'est pas un jour de dépôt
+### 14.2. Un référentiel n'est pas un jour de dépôt
 
 Le premier obstacle n'était pas dans les nouvelles données mais dans le code
 qui les aurait ignorées. `ingerer_referentiels` chargeait la nomenclature
@@ -1371,7 +1783,7 @@ Le journal a gagné deux champs (`table`, `fichier`) à cette occasion : quatre
 chargements de référentiels produisaient jusque-là quatre lignes
 indiscernables.
 
-### 9.3 « Sans retraiter l'existant » — la propriété était déjà là
+### 14.3. « Sans retraiter l'existant » — la propriété était déjà là
 
 Le sujet demande d'ingérer le nouveau dépôt **par le pipeline incrémental**.
 Aucun développement n'a été nécessaire : la propriété existait, il suffisait
@@ -1391,9 +1803,9 @@ sont intégralement recalculés — c'est le choix documenté au § 3.3
 une couche dérivée qui se reconstruit n'a pas de migration à subir quand son
 schéma change.
 
-## 10. Les deux pièges
+## 15. Les deux pièges
 
-### 10.1 Le premier piège : un référentiel incomplet
+### 15.1. Le premier piège : un référentiel incomplet
 
 > *« Le référentiel de description peut être incomplet : que faites-vous d'un
 > service non décrit ? »*
@@ -1444,7 +1856,7 @@ laisser le lecteur découvrir un service manquant.
 Le résultat net : **la Neurologie figure dans quatre des cinq indicateurs**,
 et n'est absente que de celui dont le dénominateur lui manque.
 
-### 10.2 Le second piège : le service vient du séjour
+### 15.2. Le second piège : le service vient du séjour
 
 > *« "Actes par service" : le service est porté par le séjour, pas par
 > l'acte — récupérez-le sans relier deux tables de faits entre elles. »*
@@ -1485,9 +1897,9 @@ moyenne) ou aux seuls séjours ayant reçu un acte (1,59). Un service où un
 séjour sur dix reçoit dix actes et un service où chaque séjour en reçoit un
 donnent la même première mesure et deux secondes très différentes.
 
-## 11. Le modèle après l'évolution
+## 16. Le modèle après l'évolution
 
-### 11.1 Un quatrième fait, une dimension de plus
+### 16.1. Un quatrième fait, une dimension de plus
 
 Le modèle gagne un quatrième fait et une dimension, et en enrichit une autre.
 
@@ -1518,7 +1930,7 @@ facturation : elle change dans le temps sans que les actes déjà réalisés
 changent. Figée sur chaque ligne de fait, une révision tarifaire obligerait à
 réécrire l'historique.
 
-### 11.2 La qualité des actes, démontrée sur des règles qui ne servent pas
+### 16.2. La qualité des actes, démontrée sur des règles qui ne servent pas
 
 `silver.actes` applique aux actes les règles déjà en vigueur pour les
 diagnostics et les relevés, avec trois motifs de quarantaine :
@@ -1539,9 +1951,9 @@ rapportée au § 4.3 vaut pour les actes comme pour les relevés. Un acte
 réalisé reste un acte réalisé, quelle que soit la qualité de saisie des deux
 dates qui encadrent le séjour.
 
-## 12. Les nouveaux indicateurs
+## 17. Les nouveaux indicateurs
 
-### 12.1 Ce qu'ils portent, et ce qu'ils prouvent
+### 17.1. Ce qu'ils portent, et ce qu'ils prouvent
 
 | # | Table | Ce qu'elle porte | Résultat |
 | --- | --- | --- | --- |
@@ -1554,7 +1966,7 @@ dates qui encadrent le séjour.
 ![Tableau de bord Activité technique et facturation](imgs/metabase-tdb-evolution.png)
 
 *Le troisième tableau de bord, ajouté sans toucher aux deux premiers. Il rend
-visible d'un coup d'œil ce que le § 10.1 explique : la Neurologie figure dans
+visible d'un coup d'œil ce que le § 15.1 explique : la Neurologie figure dans
 « Nombre d'actes par service », dans « Activité et DMS par catégorie » — sous
 l'étiquette « non renseigné » — et dans « Montant facturé », mais **pas** dans
 « Densité d'actes par lit », faute de dénominateur. L'encadré placé à côté de
@@ -1576,7 +1988,7 @@ rejoignent donc le harnais du § 6, et dix-sept contrôles supplémentaires
 vérifient ce qui leur est propre — conservation des totaux, absence de ligne
 pour un dénominateur inconnu, écart chiffré avec les services non décrits.
 
-### 12.2 Ce qu'il a fallu accepter
+### 17.2. Ce qu'il a fallu accepter
 
 **Faire évoluer une table gold demande de la supprimer une fois.**
 `30_gold.sql` n'exécute que des `CREATE TABLE IF NOT EXISTS`, qui n'ajoutent
@@ -1596,7 +2008,7 @@ journalise `source absente` pour chaque jour sans dépôt d'une source donnée.
 complète, portant le total de 29 à 57. Le motif préexistait — `patients` en
 produisait déjà 26 — mais le volume double, et un `WARNING` qui décrit une
 situation parfaitement normale use le signal. Les faire passer en `INFO`
-change le comportement de journalisation décrit au guide d'exploitation, § 3 : le point est
+change le comportement de journalisation décrit au § 11 : le point est
 signalé plutôt que tranché unilatéralement.
 
 **Un garde-fou reste à poser.** `copier_jour` recopie à l'octet toute source
@@ -1607,6 +2019,123 @@ aujourd'hui que `stay_id`, `code_ccam` et `acte_ts` — vérifié — mais un
 `patient_id` ajouté à la source traverserait le lake en clair. Le contrôle
 manque, et son absence est une dette assumée, pas un oubli.
 
+# Validation des chiffres
+
+Un chiffre publié sans justification n'est pas un résultat, c'est une
+affirmation. Ce chapitre expose comment chacun de ceux qui précèdent est
+établi, et comment le rejouer.
+
+**Tout ce qui suit est recalculé, jamais recopié.** Les valeurs ci-dessous
+sortent de l'entrepôt au moment de la rédaction ; `python -m tests.verifier`
+les rejoue à la demande et échoue si l'une d'elles a bougé. Le jeu de données
+n'étant pas versionné, aucun chiffre n'est écrit en dur dans un contrôle : ce
+qui est vérifié, c'est une **relation** entre des tables, pas une constante.
+
+## L'équation de conservation, couche par couche
+
+Aucune ligne ne disparaît sans être comptée. Pour quatre des cinq sources, la
+relation `bronze = silver + quarantaine('ecarte')` se ferme exactement :
+
+| Source | Bronze | Silver | Écartés | Équation |
+| --- | ---: | ---: | ---: | :---: |
+| `sejours` | 6 797 | 6 729 | 68 | ✔ |
+| `diagnostics` | 12 720 | 12 720 | 0 | ✔ |
+| `monitoring` | 41 778 | 40 920 | 858 | ✔ |
+| `actes` | 8 112 | 8 112 | 0 | ✔ |
+| `patients` | 18 000 | 6 000 | 0 | *voir ci-dessous* |
+
+**Le cas `patients` n'est pas une anomalie, c'est un grain différent.** La
+source est un **instantané cumulatif** : trois dépôts, chacun portant les
+6 000 patients, soit 18 000 lignes bronze pour 6 000 individus. Silver n'écarte
+rien — il **réduit**, en retenant la version du dépôt le plus récent. L'équation
+ligne à ligne ne s'y applique donc pas ; ce qui est vérifié à sa place est
+qu'aucun patient n'est perdu et qu'aucun n'est dupliqué :
+
+```
+uniqExact(patient_pseudo) en bronze  = 6 000
+count() en silver                    = 6 000
+```
+
+Confondre les deux propriétés serait l'erreur à ne pas commettre : une
+déduplication qui perdrait 200 patients fermerait quand même une équation
+écrite trop vite.
+
+**926 lignes en quarantaine au total**, toutes en `action = 'ecarte'`, chacune
+avec son motif et le fichier dont elle provient. Le détail des treize motifs —
+dont huit qui n'attrapent aucune ligne sur ce dépôt et sont donc démontrés par
+injection — est au § 4.3.
+
+## Les indicateurs, confrontés à leur recalcul depuis les faits
+
+Une table d'indicateur est une **copie dérivée** : elle peut diverger de ce
+qu'elle prétend résumer. Un `TRUNCATE` oublié, un filtre modifié d'un seul
+côté, et elle continue de servir un chiffre que plus rien ne fonde.
+
+Chacune des treize tables `kpi_*` est donc confrontée à son recalcul depuis les
+tables de faits — même clé, même valeur, même nombre de lignes. C'est le
+harnais décrit au § 6 ; il tourne à chaque exécution de `tests.verifier`.
+
+| Indicateur | Valeur | D'où elle sort |
+| --- | ---: | --- |
+| Séjours | 6 729 | `fact_sejour` |
+| Patients | 6 000 | `dim_patient` |
+| Séjours en cours | 683 | `fact_sejour`, `est_en_cours = 1` |
+| DMS globale | 5,15 j | moyenne sur les séjours **clos** |
+| Réadmission à 30 jours (brute) | 11,59 % | 780 / 6 729, décès compris |
+| Passages aux urgences | 1 423 | `service_code = 'URGENCES'` |
+| Relevés en alerte | 3 314 · 8,10 % | `fact_releve`, seuils du § 4.1 |
+| Pathologies diffusables | 11 sur 13 | `coh_prevalence`, k ≥ 5 |
+| Cohortes de description | 89 | `coh_description`, k ≥ 5 |
+
+**Les deux dernières lignes portent la preuve du seuil de diffusion.** Le
+référentiel compte treize pathologies ; onze seulement atteignent la base
+recherche. La trisomie 21 (3 patients) et la mucoviscidose (4) en sont
+absentes — non filtrées à la lecture, **absentes de la table**. Personne n'a eu
+à le demander.
+
+## Confrontation aux valeurs de référence de l'intervenant
+
+L'intervenant a fourni une feuille de réponses attendues. Elle est **hors
+dépôt** — marquée « ne pas distribuer » — et transcrite dans un fichier JSON
+lui aussi exclu du versionnement.
+
+`python -m tests.verifier conformite` confronte l'entrepôt à ces valeurs, une
+par une : volumétries de silver, effectifs par pathologie, moyennes à ±0,1.
+Cette section est d'une **nature différente** des quatre autres : elle peut
+échouer alors que toutes les propriétés tiennent. Un dénominateur peut être
+cohérent avec lui-même — se recalculer à l'identique depuis le fait dont il
+sort, ne jamais dépasser son numérateur — sans être **le bon**.
+
+C'est exactement ce qui s'est produit sur deux définitions. Compter les
+passages aux urgences au **mode d'admission** (3 327) ou au **service**
+(1 423) sont deux lectures également cohérentes ; seule la confrontation à la
+référence a tranché laquelle est attendue. Idem pour la réadmission, dont la
+définition de référence inclut les décès.
+
+Sur une machine où le fichier de référence est absent — le cas d'un clone du
+dépôt — la section s'annonce **ignorée** et le reste de la suite s'exécute
+normalement. Un contrôle qui ne peut pas s'exercer le dit, il ne se tait pas.
+
+## Ce que cette validation ne couvre pas
+
+**Aucune vérification médicale.** Les données sont synthétiques (§ 8.1) : la
+plateforme restitue fidèlement ce qu'elles contiennent, et aucune conclusion
+clinique n'en est tirable. Le taux d'alerte plat entre les deux services
+équipés — 8,1 % en Cardiologie, 8,0 % en Réanimation — est d'ailleurs le
+signe qu'elles sont générées.
+
+**Aucun recalcul entièrement indépendant du pipeline.** Les contrôles
+confrontent des tables de l'entrepôt entre elles, et l'entrepôt à la feuille de
+référence. Ils ne relisent pas les fichiers source avec un second code écrit
+séparément. C'est la limite de ce dispositif : une erreur qui affecterait
+identiquement le fait et son indicateur ne serait détectée que par la
+confrontation à la référence — laquelle ne couvre pas tous les chiffres.
+
+**Le nombre de contrôles n'est pas une garantie.** 428 propriétés vérifiées et
+94 tests unitaires ne disent rien de ce qui n'est pas mesuré. Deux des défauts
+racontés au chapitre suivant sont passés à travers tous ces contrôles : ils
+n'ont été trouvés qu'en fabriquant une donnée qui n'existait pas, et en lisant
+le document produit.
 
 # Ce que ce projet nous a appris
 
@@ -1731,9 +2260,9 @@ doublé, et l'a rendu visible.
 
 > **Ce que nous en retenons.** Un `WARNING` qui décrit une situation normale use
 > le signal : l'exploitant qui en voit 57 prend l'habitude de ne pas les lire, et
-> rate le jour où il y en a un vrai. La dette est énoncée au § 12.2 plutôt que
+> rate le jour où il y en a un vrai. La dette est énoncée au § 17.2 plutôt que
 > corrigée à la hâte, parce qu'elle touche un comportement de journalisation que
-> le guide d'exploitation décrit en détail.
+> la partie 2 décrit en détail.
 
 ## Ne rien casser ne coûte rien — si l'on s'y est préparé avant
 
