@@ -467,6 +467,17 @@ tables nouvelles vivant dans les fichiers existants.
 
 ### Ce qui se corrige
 
+- **La documentation est désormais en deux fichiers**, un par livrable du
+  sujet. La section « Documentation » ci-dessus ne cite que le premier :
+
+  | Document | Contenu | Livrable |
+  | --- | --- | --- |
+  | [`docs/RAPPORT.md`](docs/RAPPORT.md) | besoin, sources, architecture justifiée, traitements, indicateurs, visualisations, limites et recommandations | *Partie 1 — « un dossier »* |
+  | [`docs/EXPLOITATION.md`](docs/EXPLOITATION.md) | automatisation, gestion des erreurs, journalisation, traçabilité, lancement, reprise sur incident, maintenance | *Partie 2 — « une documentation d'utilisation et de maintenance »* |
+
+  Rien n'a été supprimé au passage : les deux réunis contiennent exactement ce
+  que contenait le rapport d'origine. Chacun est également fourni en PDF, avec
+  son sommaire — régénérables par [`docs/en_pdf.py`](docs/en_pdf.py).
 - **Les référentiels ne sont plus déposés le seul premier jour.** Chacun est
   résolu **par fichier**, sur son dépôt le plus récent. Un référentiel
   redéposé remplace donc sa version précédente au lieu d'être ignoré.
