@@ -152,7 +152,10 @@ table { border-collapse: collapse; width: 100%; margin: 0 0 10pt; font-size: 8.9
 th { background: #0b3d6b; color: #fff; text-align: left; font-weight: 600;
      padding: 5pt 7pt; font-family: "Helvetica Neue", Helvetica, sans-serif;
      hyphens: none; white-space: nowrap; }
-td code { word-break: break-all; }
+/* `break-all` coupait les codes au milieu d'un mot — « ClickHouse ne vo /
+   it pas le lake ». `anywhere` ne coupe que ce qui ne tient pas, et préfère
+   les frontières de mot. */
+td code { overflow-wrap: anywhere; word-break: normal; }
 td { padding: 4.5pt 7pt; border-bottom: 0.5pt solid #e3e6ea; vertical-align: top; }
 tbody tr:nth-child(even) { background: #f7f8fa; }
 blockquote { margin: 0 0 9pt; padding: 7pt 11pt; background: #fff8e6;
