@@ -574,6 +574,19 @@ STAY_INCONNU = "DEMO_STAY_INCONNU"
 PATIENT_ADM_NULL = "DEMO_PATIENT_ADM_NULL"
 STAY_ADM_NULL = "DEMO_SEJOUR_ADM_NULL"
 
+# Les actes sont déposés au 29 août, pas au 28 comme les autres sources. Le
+# jour de dépôt commande la PARTITION, et la remise en état ne recharge que
+# les partitions dont la source existe : injecter un acte au 28 le rendrait
+# INDESTRUCTIBLE par `eds.run --tout` — il survivrait à la démonstration.
+# L'horodatage de l'acte, lui, reste au 28 : c'est la fenêtre des séjours de
+# démonstration, et un acte antérieur à son dépôt est le cas NORMAL ici.
+JOUR_INJECTION_ACTES = "2026-08-29"
+
+# Code d'acte absent de la nomenclature CCAM : démontre qu'un code inconnu
+# n'écarte PAS l'acte — le perdre effacerait de l'activité réelle et du
+# montant facturé. Le libellé vaut 'inconnu', l'acte reste compté.
+CODE_CCAM_INCONNU = "ZZZZ999"
+
 LIGNES_FAUTIVES = [
     ("séjour, date d'admission illisible", """
         INSERT INTO bronze.sejours
@@ -782,6 +795,36 @@ def qualite() -> list[str]:
                 toDate('{JOUR_INJECTION}'), 'demo.csv', now(), 'demo')""")
     print(f"     {GRIS}injecté — relevé rattaché au séjour à pseudonyme vide{RAZ}")
 
+    # ── Actes ────────────────────────────────────────────────────────────
+    # Les trois motifs de la source `actes` n'attrapent AUCUNE ligne sur le
+    # dépôt fourni (8 112 actes, 0 orphelin, 0 hors fenêtre). Ils sont donc
+    # exercés ici, sur les mêmes séjours de démonstration que le monitoring —
+    # aucun séjour supplémentaire n'est fabriqué, les fenêtres et les cas
+    # limites existent déjà.
+    #
+    # Une insertion par cas plutôt qu'une liste VALUES commentée : ClickHouse
+    # ne tolère pas de commentaire `--` entre deux tuples de valeurs.
+    def _acte(stay_id: str, code: str, heure: str) -> None:
+        ch.command(f"""
+            INSERT INTO bronze.actes
+            (stay_id, code_ccam, acte_ts, _jour_depot, _fichier_source, _ingested_at, _run_id)
+            VALUES ('{stay_id}', '{code}', toDateTime('2026-08-28 {heure}'),
+                    toDate('{JOUR_INJECTION_ACTES}'), 'demo.csv', now(), 'demo')""")
+
+    # De part et d'autre de la fenêtre 08:00 -> 12:00 : motif 'acte_hors_sejour'.
+    _acte(STAY_FENETRE, "DZEA001", "07:00:00")
+    _acte(STAY_FENETRE, "DZEA001", "13:00:00")
+    # DANS la fenêtre, mais code hors nomenclature : conservé, libellé 'inconnu'.
+    _acte(STAY_FENETRE, CODE_CCAM_INCONNU, "10:00:00")
+    # stay_id absent de bronze.sejours : motif 'sejour_inconnu'.
+    _acte(STAY_INCONNU, "DZEA001", "09:00:00")
+    # Séjour présent, mais sans patient identifié : motif 'sejour_ecarte'.
+    _acte("DEMO_PATIENT_VIDE", "DZEA001", "09:00:00")
+    # Séjour à incohérence temporelle : conservé, la fenêtre ne s'applique pas.
+    _acte(STAY_INCOHERENT, "DZEA001", "09:00:00")
+    print(f"     {GRIS}injectés — six actes : deux hors fenêtre, un à code inconnu,"
+          f" un orphelin, un sans patient, un sur séjour incohérent{RAZ}")
+
     print("\n  ① Silver est reconstruit sur ce bronze pollué")
     executer_fichier(ch, "21_silver_transform.sql", run_id="demoqualite")
 
@@ -966,8 +1009,53 @@ def qualite() -> list[str]:
                   WHERE stay_id = '{STAY_ADM_NULL}'
                     AND toYYYYMM(coalesce(date_admission, toDate('1970-01-01'))) = 197001"""), 1)
 
+    print(f"\n  ⑨sexies Les actes suivent exactement les mêmes règles que les relevés")
+    controle("acte antérieur à l'admission écarté, motif acte_hors_sejour",
+             n(f"""SELECT count() FROM quarantaine.rejets
+                  WHERE source = 'actes'
+                    AND cle = '{STAY_FENETRE}/DZEA001@2026-08-28 07:00:00'
+                    AND motif = 'acte_hors_sejour' AND action = 'ecarte'"""), 1)
+    controle("acte postérieur à la sortie écarté, motif acte_hors_sejour",
+             n(f"""SELECT count() FROM quarantaine.rejets
+                  WHERE source = 'actes'
+                    AND cle = '{STAY_FENETRE}/DZEA001@2026-08-28 13:00:00'
+                    AND motif = 'acte_hors_sejour' AND action = 'ecarte'"""), 1)
+    controle("acte sur stay_id absent de bronze.sejours écarté, motif sejour_inconnu",
+             n(f"""SELECT count() FROM quarantaine.rejets
+                  WHERE source = 'actes' AND cle LIKE '{STAY_INCONNU}%'
+                    AND motif = 'sejour_inconnu' AND action = 'ecarte'"""), 1)
+    controle("acte sur séjour à pseudonyme vide écarté, motif sejour_ecarte",
+             n("""SELECT count() FROM quarantaine.rejets
+                  WHERE source = 'actes' AND cle LIKE 'DEMO\\_PATIENT\\_VIDE%'
+                    AND motif = 'sejour_ecarte' AND action = 'ecarte'"""), 1)
+    controle("les trois écartés sont absents de silver.actes",
+             n(f"""SELECT count() FROM silver.actes
+                  WHERE stay_id IN ('{STAY_INCONNU}', 'DEMO_PATIENT_VIDE')
+                     OR (stay_id = '{STAY_FENETRE}'
+                         AND acte_ts NOT BETWEEN toDateTime('2026-08-28 08:00:00')
+                                             AND toDateTime('2026-08-28 12:00:00'))"""), 0)
+    # La décision de l'intervenant vaut pour les actes comme pour les relevés :
+    # un séjour temporellement incohérent n'a pas de fenêtre exploitable, son
+    # acte est donc conservé sans condition de date.
+    controle("acte sur séjour incohérent CONSERVÉ, sejour_coherent = 0",
+             n(f"""SELECT count() FROM silver.actes
+                  WHERE stay_id = '{STAY_INCOHERENT}' AND sejour_coherent = 0
+                    AND patient_pseudo = '{PATIENT_INCOHERENT}'
+                    AND service_code = 'CARDIO'"""), 1)
+    controle("cet acte n'est PAS en quarantaine",
+             n(f"""SELECT count() FROM quarantaine.rejets
+                  WHERE source = 'actes' AND cle LIKE '{STAY_INCOHERENT}%'"""), 0)
+    # Un code hors nomenclature n'écarte pas l'acte : l'activité et le montant
+    # facturé resteraient sinon incomplets, sans que rien ne le signale.
+    controle(f"acte à code {CODE_CCAM_INCONNU} CONSERVÉ, libellé 'inconnu'",
+             n(f"""SELECT count() FROM silver.actes
+                  WHERE code_ccam = '{CODE_CCAM_INCONNU}' AND libelle = 'inconnu'"""), 1)
+    controle("le service de l'acte vient du SÉJOUR, pas de l'acte",
+             n(f"""SELECT count() FROM silver.actes
+                  WHERE stay_id = '{STAY_FENETRE}' AND service_code = 'CARDIO'"""), 1)
+
     print("\n  ⑩ L'équation de conservation tient malgré les injections")
-    for source in ("sejours", "diagnostics", "monitoring"):
+    for source in ("sejours", "diagnostics", "monitoring", "actes"):
         bronze = n(f"SELECT count() FROM bronze.{source}")
         silver = n(f"SELECT count() FROM silver.{source}")
         ecartes = n(f"""SELECT count() FROM quarantaine.rejets
@@ -985,7 +1073,15 @@ def qualite() -> list[str]:
                        + (SELECT count() FROM bronze.diagnostics
                           WHERE stay_id LIKE 'DEMO\\_%')
                        + (SELECT count() FROM bronze.monitoring
+                          WHERE stay_id LIKE 'DEMO\\_%')
+                       + (SELECT count() FROM bronze.actes
                           WHERE stay_id LIKE 'DEMO\\_%')"""), 0)
+    # Le code d'acte hors nomenclature n'est porté par aucun stay_id 'DEMO_' :
+    # il est injecté sur le séjour de fenêtre, et disparaîtrait donc du
+    # contrôle ci-dessus. Il est vérifié séparément.
+    controle("le code d'acte hors nomenclature ne subsiste pas non plus",
+             n(f"""SELECT count() FROM bronze.actes
+                   WHERE code_ccam = '{CODE_CCAM_INCONNU}'"""), 0)
     print()
     return echecs
 

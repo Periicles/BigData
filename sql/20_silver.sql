@@ -148,3 +148,44 @@ ORDER BY
     (stay_id, ts);
 
 -- date de la MESURE, jamais du dépôt
+
+-- Les actes techniques du séjour. Même principe que `diagnostics` : les
+-- attributs du séjour PORTEUR sont recopiés ici depuis `bronze.sejours`
+-- (version retenue), jamais lus depuis `silver.sejours`.
+--
+-- Cette dénormalisation n'est pas un confort, c'est une CONTRAINTE DU SUJET
+-- D'ÉVOLUTION : « le service est porté par le séjour, pas par l'acte —
+-- récupérez-le sans relier deux tables de faits entre elles ». En portant
+-- `service_code` dès silver, gold construit `fact_acte` sans jamais joindre
+-- `fact_acte` à `fact_sejour` — un croisement fait-à-fait, qui multiplierait
+-- les lignes dès qu'un séjour porte plusieurs actes et fausserait tout
+-- dénombrement.
+--
+-- `libelle` est enrichi depuis `bronze.ref_ccam`, comme celui de
+-- `diagnostics` l'est depuis `ref_cim10`. Le TARIF, lui, n'est pas ici : le
+-- sujet le range dans `dim_ccam` (gold), et une donnée de facturation qui
+-- change dans le temps n'a pas à être figée sur chaque ligne de fait.
+--
+-- Pas de partitionnement, contrairement à `monitoring` : 8 112 actes contre
+-- 42 000 relevés, le découpage n'apporterait rien. `acte_ts` n'en reste pas
+-- moins distinct de `_jour_depot` — les actes sont déposés en une fois, pour
+-- toute la période.
+CREATE TABLE IF NOT EXISTS silver.actes (
+    stay_id String,
+    code_ccam LowCardinality(String),
+    acte_ts DateTime,
+    libelle String,
+    -- enrichi depuis le référentiel
+    patient_pseudo String,
+    service_code LowCardinality(String),
+    admission_ts Nullable(DateTime),
+    -- 1 si le séjour porteur est présent dans silver.sejours (cohérent), 0
+    -- sinon. Un acte reste conservé dans les deux cas.
+    sejour_coherent UInt8,
+    _jour_depot Date,
+    _fichier_source String,
+    _run_id String,
+    _built_at DateTime
+) ENGINE = MergeTree
+ORDER BY
+    (stay_id, acte_ts);

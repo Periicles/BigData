@@ -711,3 +711,177 @@ WHERE
             )
         )
     );
+
+-- ── 5. ACTES ────────────────────────────────────────────────────────────
+-- Aucune anomalie propre sur ce dépôt : 8 112 actes, 0 séjour orphelin,
+-- 0 code hors nomenclature, 0 doublon, 0 acte hors de la fenêtre de son
+-- séjour. Les contrôles n'en sont pas moins écrits — un dépôt futur peut en
+-- attraper, et une règle absente ne se découvre qu'après coup.
+--
+-- Mêmes motifs, même ORDRE et même EXCLUSIVITÉ MUTUELLE que pour le
+-- monitoring, moins le contrôle physiologique qui n'a pas d'objet ici :
+--   'sejour_inconnu'   — stay_id absent de bronze.sejours.
+--   'sejour_ecarte'    — stay_id présent, patient_pseudo vide : sans patient,
+--                        l'acte ne peut être rattaché à personne.
+--   'acte_hors_sejour' — acte rattaché à un patient, sur un séjour COHÉRENT,
+--                        dont l'horodatage tombe hors de sa fenêtre.
+--
+-- La fenêtre n'a de sens QUE pour un séjour cohérent : sur un séjour dont la
+-- sortie précède l'admission, on ne sait pas laquelle des deux dates fait
+-- foi. Les 82 actes portés par les 68 séjours à incohérence temporelle sont
+-- donc CONSERVÉS, avec `sejour_coherent = 0` — cf. l'en-tête de ce fichier,
+-- DÉCISION DE L'INTERVENANT.
+--
+-- UN CODE CCAM HORS NOMENCLATURE N'ÉCARTE PAS L'ACTE, exactement comme un
+-- code CIM-10 inconnu n'écarte pas un diagnostic : l'acte a été réalisé, le
+-- perdre effacerait de l'activité réelle et fausserait le montant facturé.
+-- Le libellé vaut alors 'inconnu', et l'absence se lit en gold par une
+-- jointure sans correspondance sur `dim_ccam`.
+INSERT INTO
+    quarantaine.rejets
+SELECT
+    'actes',
+    concat(stay_id, '/', code_ccam, '@', toString(acte_ts)),
+    'sejour_inconnu',
+    'ecarte',
+    'stay_id absent de bronze.sejours',
+    _jour_depot,
+    _fichier_source,
+    '{run_id}',
+    now()
+FROM
+    bronze.actes
+WHERE
+    stay_id NOT IN (
+        SELECT
+            stay_id
+        FROM
+            bronze.sejours
+    );
+
+INSERT INTO
+    quarantaine.rejets
+SELECT
+    'actes',
+    concat(a.stay_id, '/', a.code_ccam, '@', toString(a.acte_ts)),
+    'sejour_ecarte',
+    'ecarte',
+    'séjour porteur sans patient identifié (patient_pseudo vide)',
+    a._jour_depot,
+    a._fichier_source,
+    '{run_id}',
+    now()
+FROM
+    bronze.actes AS a
+    INNER JOIN (
+        SELECT
+            *
+        FROM
+            (
+                SELECT
+                    *,
+                    row_number() OVER (
+                        PARTITION BY stay_id
+                        ORDER BY _jour_depot DESC
+                    ) AS rang
+                FROM
+                    bronze.sejours
+            )
+        WHERE
+            rang = 1
+    ) AS s ON a.stay_id = s.stay_id
+WHERE
+    s.patient_pseudo = '';
+
+-- Troisième motif : l'INNER JOIN sur silver.sejours ne voit que les séjours
+-- cohérents, les autres n'entrent donc jamais dans ce contrôle. Un séjour EN
+-- COURS n'a pas de borne haute — aucun acte n'y est écarté à ce titre.
+INSERT INTO
+    quarantaine.rejets
+SELECT
+    'actes',
+    concat(a.stay_id, '/', a.code_ccam, '@', toString(a.acte_ts)),
+    'acte_hors_sejour',
+    'ecarte',
+    if(
+        a.acte_ts < s.admission_ts,
+        concat('acte_ts=', toString(a.acte_ts), ' antérieur à l''admission=', toString(s.admission_ts)),
+        concat('acte_ts=', toString(a.acte_ts), ' postérieur à la sortie=', toString(s.discharge_ts))
+    ),
+    a._jour_depot,
+    a._fichier_source,
+    '{run_id}',
+    now()
+FROM
+    bronze.actes AS a
+    INNER JOIN silver.sejours AS s ON a.stay_id = s.stay_id
+WHERE
+    a.acte_ts < s.admission_ts
+    OR (
+        s.discharge_ts IS NOT NULL
+        AND a.acte_ts > s.discharge_ts
+    );
+
+TRUNCATE TABLE silver.actes;
+
+-- Conservé si le patient est identifié (version retenue de bronze.sejours)
+-- ET, quand le séjour est COHÉRENT (LEFT JOIN silver.sejours), si
+-- l'horodatage tombe DANS sa fenêtre. Un séjour incohérent n'a pas de fenêtre
+-- à vérifier : son acte est conservé sans condition de date.
+--
+-- Le test de cohérence est `sj.stay_id != ''`, PAS `IS NOT NULL` : même piège
+-- que dans les sections DIAGNOSTICS et MONITORING (`join_use_nulls = 0`, un
+-- LEFT JOIN sans correspondance remplit `stay_id` avec la chaîne vide, jamais
+-- NULL).
+INSERT INTO
+    silver.actes
+SELECT
+    a.stay_id,
+    a.code_ccam,
+    a.acte_ts,
+    -- `coalesce` serait MORT ici : avec join_use_nulls = 0, un LEFT JOIN sans
+    -- correspondance remplit la colonne String avec la CHAÎNE VIDE, jamais
+    -- NULL. On teste donc la CLÉ de jointure, comme pour `sj.stay_id != ''`
+    -- plus bas.
+    if(c.code_ccam = '', 'inconnu', c.libelle),
+    s.patient_pseudo,
+    s.service_code,
+    s.admission_ts,
+    (sj.stay_id != ''),
+    a._jour_depot,
+    a._fichier_source,
+    '{run_id}',
+    now()
+FROM
+    bronze.actes AS a
+    INNER JOIN (
+        SELECT
+            *
+        FROM
+            (
+                SELECT
+                    *,
+                    row_number() OVER (
+                        PARTITION BY stay_id
+                        ORDER BY _jour_depot DESC
+                    ) AS rang
+                FROM
+                    bronze.sejours
+            )
+        WHERE
+            rang = 1
+    ) AS s ON a.stay_id = s.stay_id
+    LEFT JOIN bronze.ref_ccam AS c ON a.code_ccam = c.code_ccam
+    LEFT JOIN silver.sejours AS sj ON a.stay_id = sj.stay_id
+WHERE
+    s.patient_pseudo != ''
+    AND (
+        sj.stay_id = ''
+        OR (
+            a.acte_ts >= sj.admission_ts
+            AND (
+                sj.discharge_ts IS NULL
+                OR a.acte_ts <= sj.discharge_ts
+            )
+        )
+    );

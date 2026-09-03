@@ -166,7 +166,7 @@ def qualite(r: Rapport) -> None:
     n = lambda requete: int(ch.command(requete))
 
     r.titre("Équation de conservation : bronze = silver + quarantaine")
-    for source in ("sejours", "diagnostics", "monitoring"):
+    for source in ("sejours", "diagnostics", "monitoring", "actes"):
         bronze = n(f"SELECT count() FROM bronze.{source}")
         silver = n(f"SELECT count() FROM silver.{source}")
         rejets = n(f"""SELECT count() FROM quarantaine.rejets
@@ -313,6 +313,10 @@ def qualite(r: Rapport) -> None:
         # aucune trace du séjour porteur en bronze.
         "diagnostics": {"sejour_ecarte", "sejour_inconnu"},
         "monitoring": {"capteur_hors_plage", "sejour_ecarte", "sejour_inconnu", "releve_hors_sejour"},
+        # Mêmes motifs que le monitoring, moins le contrôle physiologique
+        # qui n'a pas d'objet sur un acte. Les trois n'attrapent aucune
+        # ligne sur ce dépôt : ils sont démontrés par injection.
+        "actes": {"sejour_ecarte", "sejour_inconnu", "acte_hors_sejour"},
     }
     r.controle("'releve_hors_sejour' figure dans la liste connue de 'monitoring'",
                "releve_hors_sejour" in MOTIFS_CONNUS["monitoring"])
@@ -342,6 +346,9 @@ def qualite(r: Rapport) -> None:
     r.egal("aucun relevé orphelin de séjour (bronze.sejours)",
            n("""SELECT count() FROM silver.monitoring
                 WHERE stay_id NOT IN (SELECT stay_id FROM bronze.sejours)"""), 0)
+    r.egal("aucun acte orphelin de séjour (bronze.sejours)",
+           n("""SELECT count() FROM silver.actes
+                WHERE stay_id NOT IN (SELECT stay_id FROM bronze.sejours)"""), 0)
     # Le drapeau doit être l'exacte image de la présence dans silver.sejours —
     # ni en avance (un séjour non retenu marqué cohérent), ni en retard (un
     # séjour retenu marqué incohérent).
@@ -350,6 +357,9 @@ def qualite(r: Rapport) -> None:
                 WHERE sejour_coherent != (stay_id IN (SELECT stay_id FROM silver.sejours))"""), 0)
     r.egal("silver.monitoring.sejour_coherent conforme à silver.sejours",
            n("""SELECT count() FROM silver.monitoring
+                WHERE sejour_coherent != (stay_id IN (SELECT stay_id FROM silver.sejours))"""), 0)
+    r.egal("silver.actes.sejour_coherent conforme à silver.sejours",
+           n("""SELECT count() FROM silver.actes
                 WHERE sejour_coherent != (stay_id IN (SELECT stay_id FROM silver.sejours))"""), 0)
 
     # Le drapeau `sejour_coherent` atteste la PRÉSENCE du séjour porteur,
@@ -373,7 +383,7 @@ def qualite(r: Rapport) -> None:
         )
         WHERE rang = 1
     """
-    for table in ("diagnostics", "monitoring"):
+    for table in ("diagnostics", "monitoring", "actes"):
         r.egal(f"silver.{table} : patient/service/admission conformes à la version retenue de bronze.sejours",
                n(f"""SELECT count() FROM silver.{table} AS x
                      INNER JOIN ({version_retenue}) AS s ON x.stay_id = s.stay_id
@@ -386,6 +396,8 @@ def qualite(r: Rapport) -> None:
            n("SELECT count() FROM silver.sejours WHERE service_label = 'inconnu'"), 0)
     r.egal("aucun code CIM-10 non résolu",
            n("SELECT count() FROM silver.diagnostics WHERE libelle = 'inconnu'"), 0)
+    r.egal("aucun code CCAM non résolu",
+           n("SELECT count() FROM silver.actes WHERE libelle = 'inconnu'"), 0)
 
     # Le fait se construit SUR les dimensions : toute clé étrangère d'un fait
     # doit désigner un membre existant. Sans ce contrôle, une clé orpheline

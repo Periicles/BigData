@@ -291,7 +291,7 @@ class Pipeline:
             )
             c["lignes"] = sum(
                 int(self.ch.command(f"SELECT count() FROM silver.{t}"))
-                for t in ("patients", "sejours", "diagnostics", "monitoring")
+                for t in ("patients", "sejours", "diagnostics", "monitoring", "actes")
             )
 
         with self.etape("gold") as c:
