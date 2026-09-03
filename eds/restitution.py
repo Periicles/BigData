@@ -113,6 +113,9 @@ INTERVALLE_SYNC_S = 2
 # eux que repose la recherche-avant-création qui rend le module idempotent.
 NOM_BASE_PILOTAGE = "Pilotage hospitalier"
 NOM_BASE_RECHERCHE = "Recherche clinique"
+# Troisième tableau de bord, dans la collection du pilotage : il porte les
+# cinq indicateurs du sujet d'évolution sans toucher aux deux premiers.
+NOM_DASH_EVOLUTION = "Activité technique et facturation"
 NOM_GROUPE_PILOTAGE = "Pilotage"
 NOM_GROUPE_RECHERCHE = "Recherche"
 
@@ -797,6 +800,190 @@ def _cartes_pilotage() -> tuple[dict, ...]:
     )
 
 
+TEXTE_ENTETE_EVOLUTION = """## Activité technique et facturation
+
+Ce tableau de bord répond aux cinq indicateurs du sujet d'ÉVOLUTION — activité
+et DMS par catégorie de service, actes par service, actes par type, densité
+d'actes par lit, montant facturé (T2A). Il s'ajoute au tableau de bord
+« Pilotage hospitalier », qu'il ne remplace pas : les indicateurs de la
+première livraison y restent inchangés.
+
+**Source** : couche `gold_pilotage`, mêmes agrégats déjà construits, même
+compte borné (`eds_pilotage`). Le service d'un acte vient du SÉJOUR qui le
+porte, jamais d'un croisement entre deux tables de faits."""
+
+TEXTE_SERVICE_NON_DECRIT = """### Pourquoi la Neurologie manque ici
+
+Le référentiel de description fourni par le CHU couvre **7 des 8 services** :
+la Neurologie n'y figure pas, alors qu'elle réalise **1 471 actes**, soit 18 %
+de l'activité technique.
+
+Deux réponses différentes, parce que les colonnes n'ont pas le même rôle :
+
+* **Catégorie et pôle** sont des axes de regroupement. Ils valent
+  « non renseigné », et la Neurologie reste comptée partout — le total par
+  catégorie fait toujours 6 729 séjours, celui de l'hôpital entier.
+* **La capacité en lits est un dénominateur.** Elle est inconnue : ce graphe
+  n'a donc **pas de ligne** pour la Neurologie. Afficher zéro la ferait passer
+  pour un service sans plateau technique, ce qui serait faux.
+
+L'écart se lit : 8 112 actes au total, 6 641 couverts ici. La différence,
+1 471, est exactement l'activité du service non décrit — et non une perte."""
+
+
+def _cartes_evolution() -> tuple[dict, ...]:
+    """Spécification des cartes du tableau de bord « Activité technique et
+    facturation », qui porte les cinq indicateurs du sujet d'évolution.
+
+    Il vit dans la MÊME collection que « Pilotage hospitalier » et interroge
+    la même connexion : le cloisonnement est inchangé, la recherche clinique
+    n'y accède pas davantage.
+    """
+    return (
+        dict(type="texte", texte=TEXTE_ENTETE_EVOLUTION, row=0, col=0, size_x=16, size_y=4),
+        dict(
+            type="question", nom="Nombre d'actes techniques",
+            description=(
+                "Total des actes réalisés sur la période, tous services et tous "
+                "codes CCAM confondus."
+            ),
+            sql="SELECT sum(nb_actes) AS nombre_d_actes FROM kpi_actes_service",
+            display="scalar", viz={},
+            row=0, col=16, size_x=8, size_y=4,
+        ),
+        dict(
+            type="question", nom="Montant facturé (T2A)",
+            description=(
+                "Somme des tarifs des actes réalisés. Les actes dont le code est "
+                "absent de la nomenclature CCAM sont exclus du montant et comptés "
+                "à part — ici, aucun."
+            ),
+            sql="SELECT sum(montant_euros) AS montant_euros FROM kpi_facturation_service",
+            display="scalar", viz={},
+            row=4, col=0, size_x=8, size_y=4,
+        ),
+        dict(
+            type="question", nom="Actes par séjour",
+            description=(
+                "Nombre d'actes rapporté au nombre total de séjours. Les deux "
+                "termes viennent de deux tables de faits agrégées SÉPARÉMENT puis "
+                "rapprochées : aucun séjour n'est compté plusieurs fois."
+            ),
+            sql=(
+                "SELECT round(sum(nb_actes) / sum(nb_sejours), 2) AS actes_par_sejour "
+                "FROM kpi_actes_service"
+            ),
+            display="scalar", viz={},
+            row=4, col=8, size_x=8, size_y=4,
+        ),
+        dict(
+            type="question", nom="Services décrits par le référentiel",
+            description=(
+                "Nombre de services dont la capacité en lits est connue, sur le "
+                "total. L'écart signale la lacune du référentiel de description."
+            ),
+            sql=(
+                "SELECT concat(toString(count()), ' / ', "
+                "toString((SELECT count() FROM kpi_actes_service))) AS services_decrits "
+                "FROM kpi_densite_actes_lit"
+            ),
+            display="scalar", viz={},
+            row=4, col=16, size_x=8, size_y=4,
+        ),
+        dict(
+            type="question", nom="Activité et DMS par catégorie de service",
+            description=(
+                "Durée moyenne de séjour et volume d'activité, regroupés par "
+                "catégorie. La catégorie « non renseigné » porte le service que le "
+                "référentiel ne décrit pas : les totaux restent ceux de l'hôpital."
+            ),
+            sql=(
+                "SELECT categorie, dms_jours, nb_sejours "
+                "FROM kpi_activite_categorie ORDER BY nb_sejours DESC"
+            ),
+            display="row",
+            viz={
+                "graph.dimensions": ["categorie"], "graph.metrics": ["dms_jours"],
+                "graph.x_axis.title_text": "Durée moyenne de séjour (jours)",
+                "graph.y_axis.title_text": "Catégorie de service",
+            },
+            row=8, col=0, size_x=12, size_y=8,
+        ),
+        dict(
+            type="question", nom="Nombre d'actes par service",
+            description=(
+                "Volume d'actes par service, et intensité rapportée au séjour. "
+                "Le service est celui du SÉJOUR porteur, jamais de l'acte."
+            ),
+            sql=(
+                "SELECT service, nb_actes, actes_par_sejour "
+                "FROM kpi_actes_service ORDER BY nb_actes DESC"
+            ),
+            display="row",
+            viz={
+                "graph.dimensions": ["service"], "graph.metrics": ["nb_actes"],
+                "graph.x_axis.title_text": "Nombre d'actes",
+                "graph.y_axis.title_text": "Service",
+            },
+            row=8, col=12, size_x=12, size_y=8,
+        ),
+        dict(
+            type="question", nom="Répartition des actes par type",
+            description=(
+                "Fréquence de chaque acte de la nomenclature CCAM. "
+                "`nb_sejours_concernes` distingue un acte souvent RÉPÉTÉ d'un acte "
+                "largement RÉPANDU."
+            ),
+            sql=(
+                "SELECT acte, nb_actes, part_pct, nb_sejours_concernes, tarif_euros "
+                "FROM kpi_actes_type ORDER BY nb_actes DESC"
+            ),
+            display="table", viz={},
+            row=16, col=0, size_x=24, size_y=8,
+        ),
+        dict(
+            type="question", nom="Densité d'actes par lit",
+            description=(
+                "Intensité du plateau technique : actes rapportés au nombre de "
+                "lits. Un service dont la capacité est inconnue n'a PAS de ligne — "
+                "un ratio indéfini est absent, jamais nul."
+            ),
+            sql=(
+                "SELECT service, actes_par_lit, nb_actes, capacite_lits "
+                "FROM kpi_densite_actes_lit ORDER BY actes_par_lit DESC"
+            ),
+            display="row",
+            viz={
+                "graph.dimensions": ["service"], "graph.metrics": ["actes_par_lit"],
+                "graph.x_axis.title_text": "Actes par lit",
+                "graph.y_axis.title_text": "Service",
+            },
+            row=24, col=0, size_x=12, size_y=8,
+        ),
+        dict(type="texte", texte=TEXTE_SERVICE_NON_DECRIT, row=24, col=12, size_x=12, size_y=8),
+        dict(
+            type="question", nom="Montant facturé par service (T2A)",
+            description=(
+                "Somme des tarifs des actes réalisés, par service. Le tarif vient "
+                "de la dimension `dim_ccam`, jamais du fait : une révision "
+                "tarifaire ne réécrit pas l'historique des actes."
+            ),
+            sql=(
+                "SELECT service, montant_euros, nb_actes, montant_moyen_euros, "
+                "nb_actes_sans_tarif FROM kpi_facturation_service "
+                "ORDER BY montant_euros DESC"
+            ),
+            display="row",
+            viz={
+                "graph.dimensions": ["service"], "graph.metrics": ["montant_euros"],
+                "graph.x_axis.title_text": "Montant facturé (€)",
+                "graph.y_axis.title_text": "Service",
+            },
+            row=32, col=0, size_x=24, size_y=8,
+        ),
+    )
+
+
 def _cartes_recherche() -> tuple[dict, ...]:
     """Spécification des cartes du tableau de bord « Recherche clinique »."""
     return (
@@ -1037,10 +1224,15 @@ def poser_dashboards(
     pilotage_gid: int,
     recherche_gid: int,
 ) -> dict[str, int]:
-    """Construit les deux tableaux de bord de la Partie 1 du sujet, de façon
-    idempotente, puis vérifie chaque question par l'API avant de rendre la
-    main : une question qui échoue interrompt le provisionnement plutôt que
-    de laisser un tableau de bord silencieusement cassé."""
+    """Construit les trois tableaux de bord — les deux de la Partie 1, plus
+    celui du sujet d'évolution — de façon idempotente, puis vérifie chaque
+    question par l'API avant de rendre la main : une question qui échoue
+    interrompt le provisionnement plutôt que de laisser un tableau de bord
+    silencieusement cassé.
+
+    Le troisième vit dans la COLLECTION DU PILOTAGE et interroge la MÊME
+    connexion : aucune permission n'est ajoutée, le cloisonnement est
+    inchangé. La recherche clinique n'y accède pas davantage qu'au premier."""
     pilotage_col_id = trouver_ou_creer_collection(client, NOM_BASE_PILOTAGE)
     recherche_col_id = trouver_ou_creer_collection(client, NOM_BASE_RECHERCHE)
     poser_permissions_collections(
@@ -1058,7 +1250,13 @@ def poser_dashboards(
         recherche_col_id, recherche_db_id, _cartes_recherche(),
     )
 
-    toutes_cartes = {**cartes_pilotage, **cartes_recherche}
+    evolution_dash_id, cartes_evolution = poser_tableau_de_bord(
+        client, NOM_DASH_EVOLUTION,
+        "Les cinq indicateurs du sujet d'évolution : actes, catégories de service et facturation T2A — couche gold_pilotage.",
+        pilotage_col_id, pilotage_db_id, _cartes_evolution(),
+    )
+
+    toutes_cartes = {**cartes_pilotage, **cartes_recherche, **cartes_evolution}
     echecs = verifier_cartes(client, toutes_cartes)
     if echecs:
         for echec in echecs:
@@ -1073,6 +1271,7 @@ def poser_dashboards(
     return {
         "pilotage_dashboard_id": pilotage_dash_id,
         "recherche_dashboard_id": recherche_dash_id,
+        "evolution_dashboard_id": evolution_dash_id,
         "pilotage_collection_id": pilotage_col_id,
         "recherche_collection_id": recherche_col_id,
     }

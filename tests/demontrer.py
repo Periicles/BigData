@@ -35,6 +35,7 @@ from eds.restitution import (
     MB_URL,
     NOM_BASE_PILOTAGE,
     NOM_BASE_RECHERCHE,
+    NOM_DASH_EVOLUTION,
     ClientMetabase,
     ErreurMetabase,
     _cartes_pilotage,
@@ -297,11 +298,14 @@ def restitution() -> list[str]:
     if NOM_BASE_PILOTAGE not in bases or NOM_BASE_RECHERCHE not in bases:
         print(f"   {ROUGE}✗{RAZ} connexions Metabase incomplètes : {sorted(bases)}\n")
         return ["connexions Metabase absentes — lancez python -m eds.restitution"]
-    if NOM_BASE_PILOTAGE not in dashboards or NOM_BASE_RECHERCHE not in dashboards:
+    if (NOM_BASE_PILOTAGE not in dashboards
+            or NOM_BASE_RECHERCHE not in dashboards
+            or NOM_DASH_EVOLUTION not in dashboards):
         print(f"   {ROUGE}✗{RAZ} tableaux de bord Metabase incomplets : {sorted(dashboards)}\n")
         return ["tableaux de bord Metabase absents — lancez python -m eds.restitution"]
     pilotage_db_id, recherche_db_id = bases[NOM_BASE_PILOTAGE], bases[NOM_BASE_RECHERCHE]
     pilotage_dash_id, recherche_dash_id = dashboards[NOM_BASE_PILOTAGE], dashboards[NOM_BASE_RECHERCHE]
+    evolution_dash_id = dashboards[NOM_DASH_EVOLUTION]
 
     echecs: list[str] = []
 
@@ -352,6 +356,30 @@ def restitution() -> list[str]:
             echecs.append(f"{nom} a pu ouvrir le tableau de bord {autre_nom!r}")
         print(f"   {VERT + '✓' if refuse else ROUGE + '✗'}{RAZ} {nom:10} se voit refuser "
               f"{autre_nom!r} {GRIS}(HTTP 403){RAZ}")
+
+    _entete("③bis Le tableau de bord d'ÉVOLUTION suit le même cloisonnement")
+    # Il a été ajouté après les deux premiers, dans la collection du pilotage.
+    # Un tableau de bord ajouté après coup pourrait très bien atterrir dans une
+    # collection ouverte à tous : ce contrôle l'interdit.
+    try:
+        pilotage.get(f"/api/dashboard/{evolution_dash_id}")
+        pilotage_ouvre = True
+    except ErreurMetabase:
+        pilotage_ouvre = False
+    if not pilotage_ouvre:
+        echecs.append(f"pilotage ne peut pas ouvrir {NOM_DASH_EVOLUTION!r}")
+    print(f"   {VERT + '✓' if pilotage_ouvre else ROUGE + '✗'}{RAZ} pilotage   ouvre "
+          f"{NOM_DASH_EVOLUTION!r}")
+
+    try:
+        recherche.get(f"/api/dashboard/{evolution_dash_id}")
+        recherche_refuse = False
+    except ErreurMetabase as erreur:
+        recherche_refuse = "HTTP 403" in str(erreur)
+    if not recherche_refuse:
+        echecs.append(f"recherche a pu ouvrir {NOM_DASH_EVOLUTION!r}")
+    print(f"   {VERT + '✓' if recherche_refuse else ROUGE + '✗'}{RAZ} recherche  se voit refuser "
+          f"{NOM_DASH_EVOLUTION!r} {GRIS}(HTTP 403){RAZ}")
 
     _entete("④ La borne ne vient pas de Metabase — un ADMINISTRATEUR ne la franchit pas non plus")
     for id_connexion, nom_connexion, table_etrangere in (
