@@ -4,6 +4,12 @@
 
 ---
 
+# Partie 1 — L'entrepôt
+
+*Livraison initiale. Construction du pipeline `bronze → silver → gold`,
+cloisonnement pilotage / recherche, indicateurs du § 4 du sujet et restitution
+Metabase.*
+
 ## 1. Le besoin métier
 
 Le CHU dispose de données éparpillées entre quatre systèmes — dossier patient,
@@ -1603,7 +1609,18 @@ juste, elle doit calculer la bonne chose.
 
 ---
 
-## 5. L'évolution du besoin — actes, description de service et facturation
+# Partie 2 — L'évolution du besoin
+
+*Dépôt du 29 août 2026. Le CHU ajoute un flux d'actes techniques et deux
+nomenclatures, et demande cinq indicateurs supplémentaires — « sans tout
+refaire, sans rien casser ».*
+
+*La numérotation des sections **continue** celle de la Partie 1 : le rapport
+compte une trentaine de renvois internes (`§ 2.5`, `§ 3.4`, `§ 4.3`…), et
+redémarrer à 1 rendrait chacun d'eux ambigu. Aucune section de la Partie 1
+n'a été réécrite.*
+
+## 5. Actes, description de service et facturation
 
 ### 5.1 Ce que le CHU demande, et ce qui change
 
