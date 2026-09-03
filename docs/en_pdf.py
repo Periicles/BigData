@@ -71,7 +71,10 @@ corps = _absolutiser(corps)
 # section qui suit immédiatement une page de partie (elles feraient deux sauts
 # consécutifs, donc une page blanche).
 corps = re.sub(r"<h1", '<h1 class="partie"', corps)
-corps = re.sub(r"<h2", '<h2 class="chapitre"', corps)
+# Seules les sections NUMÉROTÉES ouvrent une page. Les titres du chapitre de
+# leçons sont aussi des h2, et leur donner un saut chacun produirait huit
+# pages au quart remplies.
+corps = re.sub(r'<h2 id="([^"]*)">(\s*\d)', r'<h2 class="chapitre" id="\1">\2', corps)
 corps = corps.replace('<h1 class="partie"', '<h1 class="couverture"', 1)
 corps = corps.replace('<h2 class="chapitre"', "<h2", 1)
 corps = re.sub(
