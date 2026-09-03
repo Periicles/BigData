@@ -293,7 +293,11 @@ SELECT
     s.stay_id,
     s.patient_pseudo,
     s.service_code,
-    coalesce(r.service_label, 'inconnu'),
+    -- `coalesce` serait MORT ici : avec join_use_nulls = 0, un LEFT JOIN sans
+    -- correspondance remplit la colonne String avec la CHAÎNE VIDE, jamais
+    -- NULL. On teste donc la CLÉ de jointure, comme pour `sj.stay_id != ''`
+    -- plus bas.
+    if(r.service_code = '', 'inconnu', r.service_label),
     assumeNotNull(s.admission_ts),
     s.discharge_ts,
     s.admission_mode,
@@ -405,7 +409,11 @@ SELECT
     d.stay_id,
     d.code_cim10,
     d.type_diag,
-    coalesce(c.libelle, 'inconnu'),
+    -- `coalesce` serait MORT ici : avec join_use_nulls = 0, un LEFT JOIN sans
+    -- correspondance remplit la colonne String avec la CHAÎNE VIDE, jamais
+    -- NULL. On teste donc la CLÉ de jointure, comme pour `sj.stay_id != ''`
+    -- plus bas.
+    if(c.code_cim10 = '', 'inconnu', c.libelle),
     s.patient_pseudo,
     s.service_code,
     s.admission_ts,
