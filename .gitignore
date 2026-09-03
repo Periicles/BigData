@@ -249,3 +249,8 @@ Screenshots/
 *.salt
 
 .DS_Store
+
+# Les captures d écran sont converties en PNG ; les PDF d origine
+# (impression navigateur) ne sont pas versionnés.
+docs/imgs/*.pdf
+docs/imgs/.DS_Store

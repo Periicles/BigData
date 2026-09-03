@@ -173,7 +173,17 @@ class ClientMetabase:
             raise ErreurMetabase(f"{methode} {chemin} -> HTTP {erreur.code} : {detail}") from None
         except urllib.error.URLError as erreur:
             raise ErreurMetabase(f"{methode} {chemin} injoignable : {erreur.reason}") from erreur
-        return json.loads(brut) if brut else None
+        if not brut:
+            return None
+        try:
+            return json.loads(brut)
+        except json.JSONDecodeError:
+            # Metabase ne répond pas TOUJOURS du JSON : `/api/setting/<clé>`
+            # renvoie la valeur brute, `fr` et non `"fr"`. Sans ce rattrapage,
+            # une lecture de réglage faisait remonter une JSONDecodeError nue
+            # jusqu'au gestionnaire d'échec inattendu — un code de sortie 2
+            # pour une réponse pourtant valide.
+            return brut.decode("utf-8", "replace").strip()
 
     def get(self, chemin: str):
         return self._requete("GET", chemin)
@@ -958,9 +968,12 @@ def _cartes_evolution() -> tuple[dict, ...]:
                 "graph.x_axis.title_text": "Actes par lit",
                 "graph.y_axis.title_text": "Service",
             },
-            row=24, col=0, size_x=12, size_y=8,
+            row=24, col=0, size_x=12, size_y=11,
         ),
-        dict(type="texte", texte=TEXTE_SERVICE_NON_DECRIT, row=24, col=12, size_x=12, size_y=8),
+        # 11 unités de haut, et non 8 : à 8, Metabase tronquait le texte en
+        # plein milieu de la phrase qui justifie l'absence de la Neurologie —
+        # la carte perdait exactement ce pour quoi elle existe.
+        dict(type="texte", texte=TEXTE_SERVICE_NON_DECRIT, row=24, col=12, size_x=12, size_y=11),
         dict(
             type="question", nom="Montant facturé par service (T2A)",
             description=(
@@ -979,7 +992,7 @@ def _cartes_evolution() -> tuple[dict, ...]:
                 "graph.x_axis.title_text": "Montant facturé (€)",
                 "graph.y_axis.title_text": "Service",
             },
-            row=32, col=0, size_x=24, size_y=8,
+            row=35, col=0, size_x=24, size_y=8,
         ),
     )
 
@@ -1359,10 +1372,29 @@ def _purger_une_passe(client: ClientMetabase) -> int:
     return supprimes
 
 
+def poser_langue(client: ClientMetabase) -> None:
+    """Met l'instance en français.
+
+    Ce n'est pas un réglage cosmétique. Metabase formate les NOMBRES selon la
+    langue : en anglais, 8 112 actes s'affichent « 8,112 » et 2 199 450 €
+    « 2,199,450 » — une virgule qui, dans un document français, se lit comme
+    un séparateur décimal. Un tableau de bord annexé à un rapport en français
+    ne doit pas obliger son lecteur à réinterpréter chaque chiffre.
+
+    `site-locale` est un réglage d'instance : il vaut pour tous les comptes,
+    et n'a donc pas à être reposé à chaque connexion.
+    """
+    if client.get("/api/setting/site-locale") == "fr":
+        return
+    client.put("/api/setting/site-locale", {"value": "fr"})
+    LOG.info("langue de l'instance : français")
+
+
 def provisionner(client: ClientMetabase) -> dict[str, int]:
     """Exécute l'intégralité du provisionnement, de façon idempotente."""
     LOG.info("provisionnement démarré")
 
+    poser_langue(client)
     purger_contenu_exemple(client)
 
     pilotage_db_id = provisionner_connexion(
