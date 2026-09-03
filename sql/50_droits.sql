@@ -55,8 +55,8 @@ GRANT SELECT(
 
 -- ── Les indicateurs agrégés : accordés en entier ────────────────────────
 --
--- Ces huit tables ne portent NI pseudonyme, NI stay_id, NI horodatage
--- précis — rien qui désigne un patient ou un séjour. `kpi_origine_service`
+-- Ces tables d'indicateurs ne portent NI pseudonyme, NI stay_id, NI
+-- horodatage précis — rien qui désigne un patient ou un séjour. `kpi_origine_service`
 -- non plus : elle croise service et département de résidence, jamais le
 -- patient lui-même. Le découpage colonne par colonne n'a donc pas d'objet
 -- ici : il n'y a aucune colonne à retenir.
@@ -73,7 +73,31 @@ GRANT SELECT ON gold_pilotage.kpi_mortalite_service    TO eds_pilotage;
 GRANT SELECT ON gold_pilotage.kpi_casemix_service      TO eds_pilotage;
 GRANT SELECT ON gold_pilotage.kpi_origine_service      TO eds_pilotage;
 
-GRANT SELECT(service_code, service) ON gold_pilotage.dim_service TO eds_pilotage;
+-- Les cinq indicateurs du sujet d'évolution. Mêmes propriétés que les huit
+-- ci-dessus : ni pseudonyme, ni stay_id, ni horodatage précis — rien à
+-- restreindre colonne par colonne.
+GRANT SELECT ON gold_pilotage.kpi_activite_categorie   TO eds_pilotage;
+GRANT SELECT ON gold_pilotage.kpi_actes_service        TO eds_pilotage;
+GRANT SELECT ON gold_pilotage.kpi_actes_type           TO eds_pilotage;
+GRANT SELECT ON gold_pilotage.kpi_densite_actes_lit    TO eds_pilotage;
+GRANT SELECT ON gold_pilotage.kpi_facturation_service  TO eds_pilotage;
+
+-- `categorie`, `capacite_lits` et `pole` décrivent l'ORGANISATION, jamais un
+-- patient : elles sont les axes d'agrégation des nouveaux indicateurs, et
+-- n'ouvrent aucun accès supplémentaire au grain de l'individu.
+GRANT SELECT(service_code, service, categorie, capacite_lits, pole)
+    ON gold_pilotage.dim_service TO eds_pilotage;
+
+-- `dim_ccam` est une nomenclature publique d'actes et de tarifs : aucune
+-- donnée de santé, aucun patient. Accordée en entier.
+GRANT SELECT ON gold_pilotage.dim_ccam TO eds_pilotage;
+
+-- Le fait ACTE ne porte pas de pseudonyme (cf. 30_gold.sql) : il n'y a pas
+-- de colonne identifiante à retenir. `stay_id` en revanche relie deux actes
+-- entre eux, et n'est PAS accordé — le pilotage analyse des volumes, il n'a
+-- pas à reconstituer le parcours technique d'un séjour.
+GRANT SELECT(code_ccam, service_code, date_acte, date_admission, sejour_coherent)
+    ON gold_pilotage.fact_acte TO eds_pilotage;
 
 -- ── Compte recherche ────────────────────────────────────────────────────
 -- Les deux tables de cohortes sont déjà agrégées, filtrées à k >= 5, et ne

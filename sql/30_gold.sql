@@ -56,10 +56,32 @@ CREATE TABLE IF NOT EXISTS gold_pilotage.dim_patient
 )
 ENGINE = MergeTree ORDER BY (patient_pseudo);
 
+-- Une HIÉRARCHIE à trois niveaux d'agrégation croissants, pas une
+-- redondance : service (le plus fin, 1 par service) -> categorie -> pole.
+-- Elle sert à analyser à trois échelles, pas à répéter la même information.
+--
+-- LE RÉFÉRENTIEL DE DESCRIPTION EST INCOMPLET : il décrit 7 des 8 services,
+-- NEURO est absent — alors qu'il porte 18 % des actes. Deux réponses
+-- distinctes, parce que les deux colonnes n'ont pas le même rôle :
+--
+--   · `categorie` et `pole` sont des AXES D'AGRÉGATION. Un service sans
+--     valeur disparaîtrait de tout regroupement, et les totaux par catégorie
+--     ne sommeraient plus au total de l'hôpital — une perte silencieuse.
+--     Ils valent donc 'non renseigné' : le service reste compté, et la
+--     lacune du référentiel se LIT dans le résultat au lieu de s'y cacher.
+--
+--   · `capacite_lits` est un DÉNOMINATEUR. Lui donner 0 ferait une division
+--     par zéro ; lui inventer une valeur fabriquerait un taux. Elle reste
+--     NULL, et l'indicateur de densité n'a simplement PAS DE LIGNE pour ce
+--     service (cf. kpi_densite_actes_lit) — un ratio indéfini est absent,
+--     jamais nul.
 CREATE TABLE IF NOT EXISTS gold_pilotage.dim_service
 (
     service_code     LowCardinality(String),
     service          String,
+    categorie        LowCardinality(String),  -- 'non renseigné' si non décrit
+    capacite_lits    Nullable(UInt16),        -- NULL si non décrit : c'est un dénominateur
+    pole             LowCardinality(String),  -- 'non renseigné' si non décrit
     _run_id          String,
     _built_at        DateTime
 )
@@ -73,6 +95,23 @@ CREATE TABLE IF NOT EXISTS gold_pilotage.dim_cim10
     _built_at        DateTime
 )
 ENGINE = MergeTree ORDER BY (code_cim10);
+
+-- Nomenclature des actes techniques. Le TARIF vit ici, dans la dimension, et
+-- non sur chaque ligne de `fact_acte` : c'est une donnée de facturation, qui
+-- change dans le temps sans que les actes déjà réalisés changent. Figée sur
+-- le fait, une révision tarifaire obligerait à réécrire l'historique.
+--
+-- Nullable parce que lu en mode tolérant depuis bronze — et parce qu'un code
+-- absent de la nomenclature n'écarte pas l'acte (cf. 21_silver_transform.sql).
+CREATE TABLE IF NOT EXISTS gold_pilotage.dim_ccam
+(
+    code_ccam        LowCardinality(String),
+    acte             String,
+    tarif_euros      Nullable(Decimal(10, 2)),
+    _run_id          String,
+    _built_at        DateTime
+)
+ENGINE = MergeTree ORDER BY (code_ccam);
 
 
 -- ══ FAIT 1 — SÉJOUR ═════════════════════════════════════════════════════
@@ -212,6 +251,56 @@ CREATE TABLE IF NOT EXISTS gold_pilotage.fact_releve
 ENGINE = MergeTree
 PARTITION BY toYYYYMM(date_mesure)
 ORDER BY (service_code, date_mesure, stay_id, ts);
+
+
+-- ══ FAIT 4 — ACTE ═══════════════════════════════════════════════════════
+-- Grain : UN ACTE TECHNIQUE RÉALISÉ PENDANT UN SÉJOUR. 0 à n par séjour.
+--
+-- `service_code` EST DÉNORMALISÉ DEPUIS LE SÉJOUR, et c'est le point central
+-- de ce fait. Le sujet d'évolution le formule ainsi : « le service est porté
+-- par le séjour, pas par l'acte — récupérez-le sans relier deux tables de
+-- faits entre elles ». Joindre `fact_acte` à `fact_sejour` ligne à ligne
+-- serait un fan trap : un séjour portant trois actes verrait sa durée, son
+-- mode d'admission et sa réadmission comptés trois fois. Le service est donc
+-- recopié dès silver (cf. 20_silver.sql), et gold le lit tel quel.
+--
+-- Les indicateurs qui croisent actes ET séjours — « nombre moyen d'actes par
+-- séjour » — agrègent CHAQUE FAIT SÉPARÉMENT puis joignent les deux
+-- résultats sur `service_code`, une clé de DIMENSION. Une jointure entre
+-- deux agrégats à la même maille ne multiplie aucune ligne ; c'est la
+-- jointure ligne à ligne qui est interdite, pas la comparaison.
+--
+-- CE QUI N'EST PAS ICI : `patient_pseudo`. Les trois autres faits le portent
+-- parce qu'un usage nommé l'exige — cohortes de patients par pathologie,
+-- réadmission, origine géographique. Aucun des cinq indicateurs demandés sur
+-- les actes ne dénombre de patients : ils comptent des actes, des séjours,
+-- des lits et des euros. Ajouter un pseudonyme « au cas où » contredirait la
+-- minimisation appliquée partout ailleurs dans cet entrepôt (§ 3.4 du
+-- rapport). Le séjour reste joignable par `stay_id` si le besoin apparaît,
+-- et c'est alors une décision à prendre, pas un droit déjà distribué.
+CREATE TABLE IF NOT EXISTS gold_pilotage.fact_acte
+(
+    -- Clés
+    stay_id          String,                  -- dimension dégénérée
+    code_ccam        LowCardinality(String),  -- -> dim_ccam
+    service_code     LowCardinality(String),  -- -> dim_service, VIA LE SÉJOUR
+
+    -- Axes
+    date_acte        Date,
+    -- Nullable : NULL si l'admission du séjour porteur était illisible.
+    -- Situe l'acte dans son séjour sans relire fact_sejour.
+    date_admission   Nullable(Date),
+
+    -- Qualité, recopiée de silver : 1 si le séjour porteur est cohérent.
+    -- Jamais un filtre — un acte reste un acte réalisé.
+    sejour_coherent  UInt8,
+
+    _run_id          String,
+    _built_at        DateTime
+)
+ENGINE = MergeTree
+PARTITION BY toYYYYMM(date_acte)
+ORDER BY (service_code, date_acte, stay_id);
 
 
 -- ══ RECHERCHE CLINIQUE — agrégats seulement ═════════════════════════════
@@ -465,3 +554,125 @@ CREATE TABLE IF NOT EXISTS gold_pilotage.kpi_origine_service
     _built_at        DateTime
 )
 ENGINE = MergeTree ORDER BY (service_code, region_code);
+
+
+-- ── Les cinq indicateurs du sujet d'évolution ───────────────────────────
+-- Même doctrine que les huit précédents : numérateur ET dénominateur sont
+-- exposés à côté de chaque taux. Sans eux, impossible de savoir si un ratio
+-- porte sur 20 actes ou sur 2 000, ni de le recomposer sur un autre
+-- périmètre.
+
+-- ① Activité et DMS par CATÉGORIE de service.
+--
+-- Pas de découpage mensuel ici, contrairement à `kpi_dms_service` : le sujet
+-- demande un regroupement par catégorie, et la vue temporelle existe déjà à
+-- la maille du service. Les deux tables restent réconciliables — la somme des
+-- `nb_sejours_clos` par catégorie égale celle de kpi_dms_service.
+--
+-- Les séjours EN COURS sont exclus de la DMS (ils n'ont pas de durée) mais
+-- comptés dans `nb_sejours` : l'activité d'un service, ce sont tous ses
+-- séjours, pas seulement ceux qui sont clos.
+CREATE TABLE IF NOT EXISTS gold_pilotage.kpi_activite_categorie
+(
+    categorie        LowCardinality(String),
+    nb_sejours       UInt32,   -- tous séjours, en cours compris
+    nb_sejours_clos  UInt32,   -- dénominateur de la DMS
+    dms_jours        Float64,
+    dms_heures       Float64,
+    mediane_jours    Float64,
+    p90_jours        Float64,
+    _run_id          String,
+    _built_at        DateTime
+)
+ENGINE = MergeTree ORDER BY (categorie);
+
+-- ② Nombre d'actes par SERVICE, et nombre moyen d'actes par séjour.
+--
+-- « Actes par séjour » est AMBIGU, et l'ambiguïté est tranchée en exposant
+-- les deux lectures plutôt qu'en en choisissant une en silence :
+--   · `actes_par_sejour`            — sur TOUS les séjours du service. C'est
+--     l'intensité du plateau technique rapportée à l'activité totale.
+--   · `actes_par_sejour_avec_acte`  — sur les seuls séjours qui ont reçu au
+--     moins un acte. C'est l'intensité de la prise en charge technique quand
+--     elle a lieu.
+-- Un service où un séjour sur dix reçoit dix actes et un service où tous les
+-- séjours en reçoivent un donnent la MÊME première mesure et deux secondes
+-- très différentes.
+CREATE TABLE IF NOT EXISTS gold_pilotage.kpi_actes_service
+(
+    service_code               LowCardinality(String),
+    service                    String,
+    categorie                  LowCardinality(String),
+    nb_actes                   UInt32,
+    nb_sejours                 UInt32,   -- dénominateur 1 : tous les séjours du service
+    nb_sejours_avec_acte       UInt32,   -- dénominateur 2 : ceux qui ont reçu un acte
+    actes_par_sejour           Float64,
+    actes_par_sejour_avec_acte Float64,
+    _run_id                    String,
+    _built_at                  DateTime
+)
+ENGINE = MergeTree ORDER BY (service_code);
+
+-- ③ Répartition des actes par TYPE d'acte.
+--
+-- `part_pct` est la part de ce code dans l'ensemble des actes : elle rend la
+-- table lisible sans avoir à en resommer le total. `nb_sejours_concernes`
+-- distingue un acte fréquent RÉPÉTÉ sur peu de séjours d'un acte fréquent
+-- RÉPANDU sur beaucoup.
+CREATE TABLE IF NOT EXISTS gold_pilotage.kpi_actes_type
+(
+    code_ccam            LowCardinality(String),
+    acte                 String,
+    nb_actes             UInt32,
+    part_pct             Float64,
+    nb_sejours_concernes UInt32,
+    tarif_euros          Nullable(Decimal(10, 2)),
+    _run_id              String,
+    _built_at            DateTime
+)
+ENGINE = MergeTree ORDER BY (code_ccam);
+
+-- ④ Densité d'actes par LIT — intensité du plateau technique.
+--
+-- CETTE TABLE N'A PAS DE LIGNE POUR UN SERVICE SANS CAPACITÉ CONNUE. C'est
+-- la conséquence directe du référentiel incomplet (cf. dim_service) : NEURO
+-- porte 1 471 actes, mais son nombre de lits est inconnu. Publier 0, ou
+-- l'omettre du dénominateur en gardant le numérateur, produirait un chiffre
+-- faux. Un ratio indéfini est ABSENT.
+--
+-- La lacune reste donc visible par différence : la somme des `nb_actes` de
+-- cette table est INFÉRIEURE au total de `kpi_actes_service`, et l'écart est
+-- exactement l'activité des services non décrits. C'est ce que vérifie
+-- `tests.verifier indicateurs`.
+CREATE TABLE IF NOT EXISTS gold_pilotage.kpi_densite_actes_lit
+(
+    service_code     LowCardinality(String),
+    service          String,
+    categorie        LowCardinality(String),
+    capacite_lits    UInt16,    -- NON nullable : une ligne n'existe que si la capacité est connue
+    nb_actes         UInt32,
+    actes_par_lit    Float64,
+    _run_id          String,
+    _built_at        DateTime
+)
+ENGINE = MergeTree ORDER BY (service_code);
+
+-- ⑤ Montant facturé par service (T2A).
+--
+-- Le tarif vient de `dim_ccam`, jamais du fait. Un acte dont le code est
+-- absent de la nomenclature n'a PAS de tarif : il est compté dans
+-- `nb_actes_sans_tarif` et exclu du montant. Sans cette colonne, un total
+-- sous-évalué serait indiscernable d'une activité plus faible.
+CREATE TABLE IF NOT EXISTS gold_pilotage.kpi_facturation_service
+(
+    service_code         LowCardinality(String),
+    service              String,
+    categorie            LowCardinality(String),
+    nb_actes             UInt32,
+    nb_actes_sans_tarif  UInt32,   -- code absent de la nomenclature : hors montant
+    montant_euros        Decimal(14, 2),
+    montant_moyen_euros  Float64,  -- rapporté aux seuls actes tarifés
+    _run_id              String,
+    _built_at            DateTime
+)
+ENGINE = MergeTree ORDER BY (service_code);

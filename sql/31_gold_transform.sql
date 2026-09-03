@@ -35,15 +35,38 @@ INSERT INTO gold_pilotage.dim_patient
 SELECT patient_pseudo, birth_year, sex, region_code, '{run_id}', now()
 FROM silver.patients;
 
+-- `ref_services` (les 8 services) commande, `ref_description_service` (7
+-- d'entre eux) complète : un LEFT JOIN, jamais un INNER — celui-ci ferait
+-- DISPARAÎTRE le service non décrit de la dimension, et avec lui 18 % des
+-- actes de tout indicateur joint dessus.
+--
+-- On teste `d.service_code = ''` et non `IS NULL` : join_use_nulls vaut 0,
+-- un LEFT JOIN sans correspondance remplit les colonnes String avec la
+-- chaîne vide (même piège que dans 21_silver_transform.sql).
+--
+-- `capacite_lits` doit rester NULL pour un service non décrit : c'est un
+-- dénominateur. Le CAST explicite est nécessaire — sans lui, ClickHouse
+-- infère UInt16 sur la branche NULL et la ramènerait à 0.
 TRUNCATE TABLE gold_pilotage.dim_service;
 INSERT INTO gold_pilotage.dim_service
-SELECT service_code, service_label, '{run_id}', now()
-FROM bronze.ref_services;
+SELECT s.service_code,
+       s.service_label,
+       if(d.service_code = '', 'non renseigné', d.categorie),
+       if(d.service_code = '', CAST(NULL AS Nullable(UInt16)), d.capacite_lits),
+       if(d.service_code = '', 'non renseigné', d.pole),
+       '{run_id}', now()
+FROM bronze.ref_services AS s
+LEFT JOIN bronze.ref_description_service AS d ON s.service_code = d.service_code;
 
 TRUNCATE TABLE gold_pilotage.dim_cim10;
 INSERT INTO gold_pilotage.dim_cim10
 SELECT code_cim10, libelle, '{run_id}', now()
 FROM bronze.ref_cim10;
+
+TRUNCATE TABLE gold_pilotage.dim_ccam;
+INSERT INTO gold_pilotage.dim_ccam
+SELECT code_ccam, libelle, tarif_euros, '{run_id}', now()
+FROM bronze.ref_ccam;
 
 
 -- ══ FAIT SÉJOUR ═════════════════════════════════════════════════════════
@@ -164,6 +187,28 @@ SELECT
     m.sejour_coherent,
     '{run_id}', now()
 FROM silver.monitoring AS m;
+
+
+-- ══ FAIT ACTE ═══════════════════════════════════════════════════════════
+-- `silver.actes` porte déjà `service_code` et `admission_ts`, recopiés du
+-- séjour porteur : aucune jointure vers `silver.sejours` ni vers
+-- `fact_sejour` ici. C'est exactement la consigne du sujet d'évolution —
+-- « récupérez-le sans relier deux tables de faits entre elles ».
+--
+-- Aucune jointure vers `dim_patient` non plus : ce fait ne porte pas de
+-- pseudonyme (cf. 30_gold.sql pour la justification).
+TRUNCATE TABLE gold_pilotage.fact_acte;
+
+INSERT INTO gold_pilotage.fact_acte
+SELECT
+    stay_id,
+    code_ccam,
+    service_code,
+    toDate(acte_ts),
+    toDate(admission_ts),
+    sejour_coherent,
+    '{run_id}', now()
+FROM silver.actes;
 
 
 -- ══ RECHERCHE — agrégats dérivés des faits ══════════════════════════════
@@ -361,3 +406,121 @@ FROM gold_pilotage.fact_sejour AS f
 INNER JOIN gold_pilotage.dim_service AS s ON f.service_code = s.service_code
 INNER JOIN gold_pilotage.dim_patient AS p ON f.patient_pseudo = p.patient_pseudo
 GROUP BY f.service_code, s.service, p.region;
+
+
+-- ── Les cinq indicateurs du sujet d'évolution ───────────────────────────
+
+-- ① Activité et DMS par catégorie de service.
+TRUNCATE TABLE gold_pilotage.kpi_activite_categorie;
+
+INSERT INTO gold_pilotage.kpi_activite_categorie
+SELECT s.categorie,
+       count(),
+       countIf(f.est_en_cours = 0),
+       round(avgIf(f.duree_jours, f.est_en_cours = 0), 2),
+       round(avgIf(f.duree_jours, f.est_en_cours = 0) * 24, 1),
+       round(medianIf(f.duree_jours, f.est_en_cours = 0), 2),
+       round(quantileIf(0.9)(f.duree_jours, f.est_en_cours = 0), 2),
+       '{run_id}', now()
+FROM gold_pilotage.fact_sejour AS f
+INNER JOIN gold_pilotage.dim_service AS s ON f.service_code = s.service_code
+GROUP BY s.categorie;
+
+-- ② Nombre d'actes par service, et actes par séjour.
+--
+-- DEUX AGRÉGATS INDÉPENDANTS, joints sur `service_code` — jamais les deux
+-- faits ligne à ligne. `fact_acte` est réduit à une ligne par service,
+-- `fact_sejour` aussi, et seules ces deux réductions se rencontrent : aucune
+-- ligne ne peut être multipliée. C'est la lecture littérale de la consigne
+-- du sujet.
+--
+-- Le FULL JOIN, et non un INNER : un service sans aucun acte doit apparaître
+-- avec nb_actes = 0, et un service dont tous les séjours auraient disparu
+-- doit rester visible plutôt que d'escamoter ses actes.
+TRUNCATE TABLE gold_pilotage.kpi_actes_service;
+
+INSERT INTO gold_pilotage.kpi_actes_service
+SELECT d.service_code,
+       d.service,
+       d.categorie,
+       a.nb_actes,
+       sj.nb_sejours,
+       a.nb_sejours_avec_acte,
+       if(sj.nb_sejours = 0, 0, round(a.nb_actes / sj.nb_sejours, 2)),
+       if(a.nb_sejours_avec_acte = 0, 0, round(a.nb_actes / a.nb_sejours_avec_acte, 2)),
+       '{run_id}', now()
+FROM gold_pilotage.dim_service AS d
+LEFT JOIN (
+    SELECT service_code, count() AS nb_actes,
+           uniqExact(stay_id) AS nb_sejours_avec_acte
+    FROM gold_pilotage.fact_acte GROUP BY service_code
+) AS a ON d.service_code = a.service_code
+LEFT JOIN (
+    SELECT service_code, count() AS nb_sejours
+    FROM gold_pilotage.fact_sejour GROUP BY service_code
+) AS sj ON d.service_code = sj.service_code;
+
+-- ③ Répartition des actes par type d'acte.
+--
+-- La part est calculée sur le total de `fact_acte`, lu une fois en
+-- sous-requête scalaire : sans elle il faudrait resommer la table pour
+-- interpréter une ligne.
+TRUNCATE TABLE gold_pilotage.kpi_actes_type;
+
+INSERT INTO gold_pilotage.kpi_actes_type
+SELECT f.code_ccam,
+       if(c.code_ccam = '', 'inconnu', c.acte),
+       count(),
+       round(100 * count() / (SELECT count() FROM gold_pilotage.fact_acte), 2),
+       uniqExact(f.stay_id),
+       c.tarif_euros,
+       '{run_id}', now()
+FROM gold_pilotage.fact_acte AS f
+LEFT JOIN gold_pilotage.dim_ccam AS c ON f.code_ccam = c.code_ccam
+GROUP BY f.code_ccam, c.code_ccam, c.acte, c.tarif_euros;
+
+-- ④ Densité d'actes par lit.
+--
+-- L'INNER JOIN et le `capacite_lits IS NOT NULL` disent la même chose deux
+-- fois, volontairement : le premier est la mécanique, le second l'intention.
+-- Un service sans capacité connue N'A PAS DE LIGNE — un ratio indéfini est
+-- absent, jamais nul. La lacune se lit par différence avec
+-- `kpi_actes_service`, et `tests.verifier` mesure exactement cet écart.
+TRUNCATE TABLE gold_pilotage.kpi_densite_actes_lit;
+
+INSERT INTO gold_pilotage.kpi_densite_actes_lit
+SELECT d.service_code,
+       d.service,
+       d.categorie,
+       d.capacite_lits,
+       count(),
+       round(count() / d.capacite_lits, 2),
+       '{run_id}', now()
+FROM gold_pilotage.fact_acte AS f
+INNER JOIN gold_pilotage.dim_service AS d ON f.service_code = d.service_code
+WHERE d.capacite_lits IS NOT NULL
+GROUP BY d.service_code, d.service, d.categorie, d.capacite_lits;
+
+-- ⑤ Montant facturé par service (T2A).
+--
+-- Le tarif vient de la DIMENSION. Un acte dont le code est absent de la
+-- nomenclature n'a pas de tarif : `sumIf` l'exclut du montant, et
+-- `nb_actes_sans_tarif` le rend visible — sans quoi un total sous-évalué
+-- ressemblerait à une activité plus faible.
+TRUNCATE TABLE gold_pilotage.kpi_facturation_service;
+
+INSERT INTO gold_pilotage.kpi_facturation_service
+SELECT f.service_code,
+       d.service,
+       d.categorie,
+       count(),
+       countIf(c.tarif_euros IS NULL),
+       sum(coalesce(c.tarif_euros, toDecimal64(0, 2))),
+       if(countIf(c.tarif_euros IS NOT NULL) = 0, 0,
+          round(sum(coalesce(c.tarif_euros, toDecimal64(0, 2)))
+                / countIf(c.tarif_euros IS NOT NULL), 2)),
+       '{run_id}', now()
+FROM gold_pilotage.fact_acte AS f
+INNER JOIN gold_pilotage.dim_service AS d ON f.service_code = d.service_code
+LEFT JOIN gold_pilotage.dim_ccam AS c ON f.code_ccam = c.code_ccam
+GROUP BY f.service_code, d.service, d.categorie;

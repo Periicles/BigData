@@ -412,6 +412,10 @@ def qualite(r: Rapport) -> None:
         ("fact_diagnostic", "service_code",   "dim_service"),
         ("fact_releve",     "patient_pseudo", "dim_patient"),
         ("fact_releve",     "service_code",   "dim_service"),
+        # `fact_acte` ne porte pas de patient_pseudo : il n'a donc pas de
+        # ligne vers dim_patient, et c'est voulu (cf. 30_gold.sql).
+        ("fact_acte",       "code_ccam",      "dim_ccam"),
+        ("fact_acte",       "service_code",   "dim_service"),
     ):
         r.egal(f"{fait}.{cle} -> {dimension}",
                n(f"""SELECT count() FROM gold_pilotage.{fait}
@@ -546,6 +550,66 @@ COHERENCE_KPI = {
            INNER JOIN gold_pilotage.dim_patient AS p ON f.patient_pseudo = p.patient_pseudo
            GROUP BY f.service_code, region_code""",
         ("service_code", "region_code"),
+    ),
+    # ── Les cinq indicateurs du sujet d'évolution ───────────────────────
+    "kpi_activite_categorie": (
+        "categorie, nb_sejours AS mesure, nb_sejours_clos AS effectif",
+        """SELECT s.categorie AS categorie, count() AS mesure,
+                  countIf(f.est_en_cours = 0) AS effectif
+           FROM gold_pilotage.fact_sejour AS f
+           INNER JOIN gold_pilotage.dim_service AS s ON f.service_code = s.service_code
+           GROUP BY s.categorie""",
+        ("categorie",),
+    ),
+    # Les deux mesures viennent de DEUX faits différents, agrégés séparément
+    # puis joints sur la clé de dimension — jamais ligne à ligne. Le recalcul
+    # reproduit ce chemin : s'il était écrit en jointure directe entre
+    # fact_acte et fact_sejour, il produirait un nb_sejours multiplié par le
+    # nombre d'actes, et le contrôle échouerait — ce qui est précisément la
+    # garantie recherchée.
+    "kpi_actes_service": (
+        "service_code, nb_actes AS mesure, nb_sejours AS effectif",
+        """SELECT d.service_code AS service_code,
+                  coalesce(a.nb_actes, 0) AS mesure,
+                  coalesce(sj.nb_sejours, 0) AS effectif
+           FROM gold_pilotage.dim_service AS d
+           LEFT JOIN (SELECT service_code, count() AS nb_actes
+                      FROM gold_pilotage.fact_acte GROUP BY service_code) AS a
+                  ON d.service_code = a.service_code
+           LEFT JOIN (SELECT service_code, count() AS nb_sejours
+                      FROM gold_pilotage.fact_sejour GROUP BY service_code) AS sj
+                  ON d.service_code = sj.service_code""",
+        ("service_code",),
+    ),
+    "kpi_actes_type": (
+        "code_ccam, nb_actes AS mesure, nb_sejours_concernes AS effectif",
+        """SELECT code_ccam, count() AS mesure, uniqExact(stay_id) AS effectif
+           FROM gold_pilotage.fact_acte GROUP BY code_ccam""",
+        ("code_ccam",),
+    ),
+    # Le recalcul porte le MÊME filtre `capacite_lits IS NOT NULL` que la
+    # table : un service non décrit ne doit apparaître ni dans l'une ni dans
+    # l'autre. Le contrôle de NOMBRE DE LIGNES du harnais est ici l'essentiel
+    # — c'est lui qui détecterait une ligne NEURO réapparue avec un
+    # dénominateur nul.
+    "kpi_densite_actes_lit": (
+        "service_code, nb_actes AS mesure, capacite_lits AS effectif",
+        """SELECT f.service_code AS service_code, count() AS mesure,
+                  max(d.capacite_lits) AS effectif
+           FROM gold_pilotage.fact_acte AS f
+           INNER JOIN gold_pilotage.dim_service AS d ON f.service_code = d.service_code
+           WHERE d.capacite_lits IS NOT NULL
+           GROUP BY f.service_code""",
+        ("service_code",),
+    ),
+    "kpi_facturation_service": (
+        "service_code, nb_actes AS mesure, nb_actes_sans_tarif AS effectif",
+        """SELECT f.service_code AS service_code, count() AS mesure,
+                  countIf(c.tarif_euros IS NULL) AS effectif
+           FROM gold_pilotage.fact_acte AS f
+           LEFT JOIN gold_pilotage.dim_ccam AS c ON f.code_ccam = c.code_ccam
+           GROUP BY f.service_code""",
+        ("service_code",),
     ),
 }
 
@@ -890,6 +954,109 @@ def indicateurs(r: Rapport) -> None:
     r.egal("aucun département de résidence vide",
            n("""SELECT count() FROM gold_pilotage.kpi_origine_service
                 WHERE region_code = ''"""), 0)
+
+    # ⑪-⑮ Les cinq indicateurs du sujet d'évolution -------------------------
+    r.titre("⑪ Activité et DMS par catégorie de service")
+    for categorie, sejours, clos, dms in lignes("""
+            SELECT categorie, nb_sejours, nb_sejours_clos, dms_jours
+            FROM gold_pilotage.kpi_activite_categorie ORDER BY nb_sejours DESC"""):
+        r.valeur(f"{categorie}", f"{dms:>5} j   {GRIS}{sejours} séjours, {clos} clos{RAZ}")
+    _coherence_kpi(r, "kpi_activite_categorie")
+    # LE CONTRÔLE QUI COMPTE : le service non décrit ne doit pas s'évaporer.
+    # C'est ce que garantit le comblement en 'non renseigné' — sans lui, un
+    # INNER JOIN muet ferait disparaître 18 % de l'activité, et le total par
+    # catégorie ne serait plus celui de l'hôpital.
+    r.egal("l'activité par catégorie couvre TOUS les séjours",
+           n("SELECT sum(nb_sejours) FROM gold_pilotage.kpi_activite_categorie"),
+           n("SELECT count() FROM gold_pilotage.fact_sejour"))
+    r.egal("la catégorie 'non renseigné' existe et porte le service non décrit",
+           n("""SELECT nb_sejours FROM gold_pilotage.kpi_activite_categorie
+                WHERE categorie = 'non renseigné'"""),
+           n("""SELECT count() FROM gold_pilotage.fact_sejour
+                WHERE service_code IN (SELECT service_code FROM gold_pilotage.dim_service
+                                       WHERE categorie = 'non renseigné')"""))
+
+    r.titre("⑫ Nombre d'actes par service")
+    for service, actes, sejours, par_sejour in lignes("""
+            SELECT service, nb_actes, nb_sejours, actes_par_sejour
+            FROM gold_pilotage.kpi_actes_service ORDER BY nb_actes DESC LIMIT 4"""):
+        r.valeur(f"{service}", f"{actes:>5} actes   {GRIS}{par_sejour} par séjour ({sejours} séjours){RAZ}")
+    _coherence_kpi(r, "kpi_actes_service")
+    r.egal("les actes par service couvrent TOUS les actes",
+           n("SELECT sum(nb_actes) FROM gold_pilotage.kpi_actes_service"),
+           n("SELECT count() FROM gold_pilotage.fact_acte"))
+    # Le fan trap qu'interdit le sujet : si le service était récupéré par une
+    # jointure ligne à ligne entre fact_acte et fact_sejour, nb_sejours serait
+    # multiplié par le nombre d'actes du séjour. Ce contrôle le détecterait.
+    r.egal("nb_sejours n'est pas gonflé par une jointure fait-à-fait",
+           n("SELECT sum(nb_sejours) FROM gold_pilotage.kpi_actes_service"),
+           n("SELECT count() FROM gold_pilotage.fact_sejour"))
+    r.egal("jamais plus de séjours avec acte que de séjours",
+           n("""SELECT count() FROM gold_pilotage.kpi_actes_service
+                WHERE nb_sejours_avec_acte > nb_sejours"""), 0)
+
+    r.titre("⑬ Répartition des actes par type")
+    for code, acte, nb, part in lignes("""
+            SELECT code_ccam, acte, nb_actes, part_pct
+            FROM gold_pilotage.kpi_actes_type ORDER BY nb_actes DESC LIMIT 4"""):
+        r.valeur(f"{code} · {acte}", f"{part:>5} %   {GRIS}{nb} actes{RAZ}")
+    _coherence_kpi(r, "kpi_actes_type")
+    r.egal("les parts de tous les types somment à 100 %",
+           int(round(float(ch.command(
+               "SELECT sum(part_pct) FROM gold_pilotage.kpi_actes_type")))), 100)
+    r.egal("la répartition couvre TOUS les actes",
+           n("SELECT sum(nb_actes) FROM gold_pilotage.kpi_actes_type"),
+           n("SELECT count() FROM gold_pilotage.fact_acte"))
+
+    r.titre("⑭ Densité d'actes par lit")
+    for service, lits, actes, densite in lignes("""
+            SELECT service, capacite_lits, nb_actes, actes_par_lit
+            FROM gold_pilotage.kpi_densite_actes_lit ORDER BY actes_par_lit DESC LIMIT 4"""):
+        r.valeur(f"{service}", f"{densite:>6} actes/lit   {GRIS}{actes} actes, {lits} lits{RAZ}")
+    _coherence_kpi(r, "kpi_densite_actes_lit")
+    # LE CONTRÔLE CENTRAL DE CET INDICATEUR : un service sans capacité connue
+    # n'a PAS de ligne. Un ratio indéfini est absent, jamais nul — publier 0
+    # le ferait passer pour un service sans activité technique.
+    r.egal("aucun service sans capacité connue n'a de ligne",
+           n("""SELECT count() FROM gold_pilotage.kpi_densite_actes_lit
+                WHERE service_code IN (SELECT service_code FROM gold_pilotage.dim_service
+                                       WHERE capacite_lits IS NULL)"""), 0)
+    r.egal("aucune densité nulle (un zéro serait un ratio inventé)",
+           n("SELECT count() FROM gold_pilotage.kpi_densite_actes_lit WHERE actes_par_lit = 0"), 0)
+    # La lacune du référentiel se LIT par différence, elle ne se devine pas :
+    # l'écart entre les deux tables vaut exactement l'activité des services
+    # non décrits.
+    r.egal("l'écart avec les actes par service = l'activité des services non décrits",
+           n("""SELECT (SELECT sum(nb_actes) FROM gold_pilotage.kpi_actes_service)
+                     - (SELECT sum(nb_actes) FROM gold_pilotage.kpi_densite_actes_lit)"""),
+           n("""SELECT count() FROM gold_pilotage.fact_acte
+                WHERE service_code IN (SELECT service_code FROM gold_pilotage.dim_service
+                                       WHERE capacite_lits IS NULL)"""))
+
+    r.titre("⑮ Montant facturé par service (T2A)")
+    for service, actes, montant, moyen in lignes("""
+            SELECT service, nb_actes, montant_euros, montant_moyen_euros
+            FROM gold_pilotage.kpi_facturation_service ORDER BY montant_euros DESC LIMIT 4"""):
+        r.valeur(f"{service}", f"{montant:>12} €   {GRIS}{actes} actes, {moyen} € en moyenne{RAZ}")
+    _coherence_kpi(r, "kpi_facturation_service")
+    # Le service non décrit N'EST PAS exclu ici : la facturation n'a pas
+    # besoin d'un nombre de lits. Un service ne disparaît que de l'indicateur
+    # dont le dénominateur lui manque, jamais des autres.
+    r.egal("la facturation couvre TOUS les services, y compris les non décrits",
+           n("SELECT count() FROM gold_pilotage.kpi_facturation_service"),
+           n("SELECT uniqExact(service_code) FROM gold_pilotage.fact_acte"))
+    r.egal("la facturation couvre TOUS les actes",
+           n("SELECT sum(nb_actes) FROM gold_pilotage.kpi_facturation_service"),
+           n("SELECT count() FROM gold_pilotage.fact_acte"))
+    # Le montant total est recalculé depuis le fait et la dimension, jamais
+    # comparé à une constante : le jeu de données n'est pas versionné.
+    r.egal("le montant total correspond au recalcul fait x dimension",
+           int(float(ch.command(
+               "SELECT sum(montant_euros) FROM gold_pilotage.kpi_facturation_service"))),
+           int(float(ch.command("""
+               SELECT sum(coalesce(c.tarif_euros, toDecimal64(0, 2)))
+               FROM gold_pilotage.fact_acte AS f
+               LEFT JOIN gold_pilotage.dim_ccam AS c ON f.code_ccam = c.code_ccam"""))))
 
 
 # ── RGPD ─────────────────────────────────────────────────────────────────

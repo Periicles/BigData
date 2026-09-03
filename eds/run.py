@@ -326,6 +326,12 @@ class Pipeline:
                     "gold_pilotage.kpi_mortalite_service",
                     "gold_pilotage.kpi_casemix_service",
                     "gold_pilotage.kpi_origine_service",
+                    "gold_pilotage.fact_acte",
+                    "gold_pilotage.kpi_activite_categorie",
+                    "gold_pilotage.kpi_actes_service",
+                    "gold_pilotage.kpi_actes_type",
+                    "gold_pilotage.kpi_densite_actes_lit",
+                    "gold_pilotage.kpi_facturation_service",
                 )
             )
 
