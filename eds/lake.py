@@ -2,7 +2,8 @@
 
 Le dépôt `source-filestorage` est en lecture seule : le pipeline n'y écrit
 jamais. Seules `patients` et `sejours` portent de l'identité et sont donc
-transformées ; les trois autres sources sont recopiées à l'octet près.
+transformées ; les autres sources sont recopiées à l'octet près — elles ne
+référencent le patient qu'indirectement, par `stay_id`.
 
 La transformation est faite **en flux**, ligne par ligne : les identités ne
 sont jamais écrites sur disque, pas même dans un répertoire temporaire, et

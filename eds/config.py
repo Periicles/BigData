@@ -18,7 +18,14 @@ SOURCE = RACINE / "eds-chu-sujet" / "source-filestorage"
 # Zone de travail : copie pseudonymisée des dépôts.
 LAKE = RACINE / "lake"
 
-SOURCES_CONNUES = ("patients", "sejours", "diagnostics", "monitoring", "referentiels")
+SOURCES_CONNUES = (
+    "patients",
+    "sejours",
+    "diagnostics",
+    "monitoring",
+    "actes",
+    "referentiels",
+)
 
 # ── Seuils d'alerte clinique ─────────────────────────────────────────────
 #

@@ -221,6 +221,8 @@ __marimo__/
 # Les fichiers sources contiennent l'identité en clair (nom, prénom, NIR).
 # Ils ne doivent jamais entrer dans l'historique git : un commit ne se retire pas.
 eds-chu-sujet/source-filestorage/
+# Dépôt d'évolution du CHU (2026-08-29), fusionné dans le dépôt ci-dessus.
+eds-chu-sujet/source-evolution/
 # Corrigé de l'intervenant : « ne pas distribuer »
 eds-chu-sujet/REPONSES-KPI-niveau1.pdf
 eds-chu-sujet/corrige-kpi-niveau1.json

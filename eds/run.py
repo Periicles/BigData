@@ -255,20 +255,30 @@ class Pipeline:
             c["lignes"] = sum(compteurs.values())
 
     def ingerer_referentiels(self) -> None:
-        """Rechargés intégralement : ils ne sont déposés que le premier jour.
+        """Rechargés intégralement, hors du flux incrémental journalier.
 
-        Le jour retenu est celui que porte LA SOURCE, pas le lake. Le lake est
-        cumulatif : il conserve ce qu'un dépôt antérieur y a écrit, y compris
-        un répertoire que la source ne propose plus. Choisir le premier jour
-        présent dans le lake ferait donc charger, un jour, une nomenclature
-        périmée dont plus rien ne signale l'âge.
+        Les jours retenus sont ceux que porte LA SOURCE, filtrés par ce que le
+        lake contient. Le lake est cumulatif : il conserve ce qu'un dépôt
+        antérieur y a écrit, y compris un répertoire que la source ne propose
+        plus. Partir du lake seul ferait donc charger, un jour, une
+        nomenclature périmée dont plus rien ne signale l'âge.
+
+        Tous les dépôts sont transmis, pas seulement le premier : les
+        référentiels n'arrivent pas tous ensemble — `services.csv` et
+        `cim10.csv` au premier jour, `ccam.csv` et `description_service.csv`
+        au dépôt d'évolution. Chacun est résolu sur son dépôt le plus récent
+        (cf. eds/warehouse.py `_dernier_depot`).
         """
-        jours = [j for j in lister_jours("referentiels") if (LAKE / "referentiels" / j).is_dir()]
+        jours = [
+            j
+            for j in lister_jours("referentiels")
+            if (LAKE / "referentiels" / j).is_dir()
+        ]
         if not jours:
             LOG.warning("aucun référentiel dans le lake")
             return
         with self.etape("referentiels") as c:
-            compteurs = charger_referentiels(self.ch, jours[0], self.run_id)
+            compteurs = charger_referentiels(self.ch, jours, self.run_id)
             c["lignes"] = sum(compteurs.values())
 
     def transformer(self) -> None:
