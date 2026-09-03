@@ -33,6 +33,25 @@ corps = markdown.markdown(
                                       "pygments_style": "friendly"}},
 )
 
+# ── Sommaire ────────────────────────────────────────────────────────────
+# Construit après le rendu, depuis les titres réellement produits : un
+# sommaire écrit à la main se désynchronise dès qu'un titre change. Deux
+# niveaux seulement — au troisième, il occuperait lui-même deux pages.
+def _sommaire(html: str) -> str:
+    entrees = re.findall(r'<h([123]) id="([^"]+)">(.*?)</h[123]>', html, re.S)
+    if len(entrees) < 6:
+        return ""
+    lignes = ['<nav class="sommaire"><h2 class="sansnum">Sommaire</h2><ul>']
+    for niveau, ancre, libelle in entrees:
+        if niveau == "1" and "Dossier" in libelle or "Guide" in libelle:
+            continue  # le titre du document n'entre pas dans son propre sommaire
+        texte = re.sub(r"<[^>]+>", "", libelle)
+        lignes.append(f'<li class="n{niveau}"><a href="#{ancre}">{texte}</a></li>')
+    lignes.append("</ul></nav>")
+    return "".join(lignes)
+
+corps = corps.replace("<hr />", _sommaire(corps) + "<hr />", 1)
+
 # Chaque chapitre commence une page — sauf le tout premier titre, et sauf la
 # section qui suit immédiatement une page de partie (elles feraient deux sauts
 # consécutifs, donc une page blanche).
@@ -69,6 +88,15 @@ h1.couverture { margin-top: 175pt; font-size: 30pt; text-align: center;
 h1.couverture + p { text-align: center; font-size: 12pt; color: #444;
                     margin-top: 10pt; }
 h1.couverture ~ hr { display: none; }
+nav.sommaire { break-before: page; break-after: page; }
+nav.sommaire h2.sansnum { break-before: auto; font-size: 17pt; border-bottom: 1.6pt solid #1a1a1a; }
+nav.sommaire ul { list-style: none; padding: 0; margin: 12pt 0 0; }
+nav.sommaire li { margin: 0; padding: 2.5pt 0; }
+nav.sommaire li.n1 { font-weight: 700; font-size: 11.4pt; margin-top: 12pt;
+                     color: #0b3d6b; border-top: 0.6pt solid #d5d9de; padding-top: 8pt; }
+nav.sommaire li.n2 { font-size: 10pt; padding-left: 10pt; }
+nav.sommaire li.n3 { font-size: 9.2pt; padding-left: 26pt; color: #444; }
+nav.sommaire a { color: inherit; }
 /* Page de partie : un intertitre qui sépare franchement les deux livraisons. */
 h1.partie { break-before: page; font-size: 27pt; margin: 44pt 0 10pt;
             padding-bottom: 10pt; border-bottom: 3pt solid #0b3d6b; color: #0b3d6b; }
