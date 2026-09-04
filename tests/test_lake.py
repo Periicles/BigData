@@ -8,11 +8,24 @@ l'entrepôt entier est construit dessus.
 from __future__ import annotations
 
 import csv
+import json
 
+import duckdb
 import pytest
 
 from eds import lake
 from tests.conftest import deposer
+
+
+def ecrire_parquet(cible, requete: str) -> None:
+    """Fabrique un parquet à partir d'un SELECT DuckDB."""
+    cible.parent.mkdir(parents=True, exist_ok=True)
+    duckdb.sql(f"COPY ({requete}) TO '{cible}' (FORMAT PARQUET)")
+
+
+def colonnes_parquet(chemin) -> list[str]:
+    return [r[0] for r in duckdb.sql(
+        f"DESCRIBE SELECT * FROM read_parquet('{chemin}')").fetchall()]
 
 
 # ── Pseudonymisation ─────────────────────────────────────────────────────
@@ -166,12 +179,109 @@ def test_actes_est_une_source_connue():
     assert "actes" in SOURCES_CONNUES
 
 
+# ── Projection : aucune colonne non déclarée n'atteint le lake ───────────
+def test_parquet_projete_sur_les_colonnes_declarees(source, lake_factice, sel):
+    """LE TEST QUI FERME LE TROU DES SOURCES BINAIRES. `actes` n'a pas de
+    transformation : avant, elle était recopiée à l'octet, et une colonne
+    identifiante ajoutée demain au parquet traversait le lake en clair."""
+    ecrire_parquet(
+        source / "actes/2026-08-29/actes.parquet",
+        "SELECT 'S0001' AS stay_id, 'AAAA001' AS code_ccam, "
+        "TIMESTAMP '2026-08-29 10:00:00' AS acte_ts, "
+        "'P0001' AS patient_id, 'Dupont' AS nom",
+    )
+
+    lake.copier_jour("2026-08-29")
+
+    copie = lake_factice / "actes/2026-08-29/actes.parquet"
+    assert colonnes_parquet(copie) == ["stay_id", "code_ccam", "acte_ts"]
+    octets = copie.read_bytes()
+    for identifiant in (b"patient_id", b"P0001", b"nom", b"Dupont"):
+        assert identifiant not in octets
+
+
+def test_json_projete_jusque_dans_les_objets_imbriques(source, lake_factice, sel):
+    """Une projection des seules clés de premier niveau ne suffirait pas :
+    `diagnostics` est un tableau d'objets, où un champ identifiant peut être
+    ajouté tout aussi facilement."""
+    deposer(source, "diagnostics/2026-08-13/diagnostics.json", json.dumps([{
+        "stay_id": "S0001",
+        "nir": "1750699123456",
+        "diagnostics": [
+            {"code_cim10": "I50", "type": "principal", "praticien": "Dr Dupont"},
+        ],
+    }]))
+
+    lake.copier_jour("2026-08-13")
+
+    copie = lake_factice / "diagnostics/2026-08-13/diagnostics.json"
+    contenu = json.loads(copie.read_text(encoding="utf-8"))
+    assert list(contenu[0]) == ["stay_id", "diagnostics"]
+    assert list(contenu[0]["diagnostics"][0]) == ["code_cim10", "type"]
+    brut = copie.read_text(encoding="utf-8")
+    for identifiant in ("nir", "1750699123456", "praticien", "Dupont"):
+        assert identifiant not in brut
+
+
+def test_referentiels_projetes_fichier_par_fichier(source, lake_factice, sel):
+    """Un même dépôt porte plusieurs référentiels de schémas différents : la
+    déclaration est donc par fichier, pas par source."""
+    deposer(source, "referentiels/2026-08-01/services.csv",
+            "service_code,service_label,responsable\nCARDIO,Cardiologie,Dr Dupont\n")
+    deposer(source, "referentiels/2026-08-01/cim10.csv",
+            "code_cim10,libelle\nI50,Insuffisance cardiaque\n")
+
+    lake.copier_jour("2026-08-01")
+
+    services = (lake_factice / "referentiels/2026-08-01/services.csv").read_text(
+        encoding="utf-8")
+    assert csv.DictReader(services.splitlines()).fieldnames == [
+        "service_code", "service_label"]
+    assert "Dupont" not in services
+    cim10 = (lake_factice / "referentiels/2026-08-01/cim10.csv").read_text(
+        encoding="utf-8")
+    assert csv.DictReader(cim10.splitlines()).fieldnames == ["code_cim10", "libelle"]
+
+
+def test_fichier_non_declare_n_atteint_pas_le_lake(source, lake_factice, sel, caplog):
+    """Refus par défaut : un fichier dont le contenu n'est pas décrit ne peut
+    pas être projeté, donc il n'est pas copié — il est signalé."""
+    deposer(source, "referentiels/2026-08-01/praticiens.csv",
+            "nom,prenom,rpps\nDupont,Marie,10001234567\n")
+
+    fichiers, _ = lake.copier_jour("2026-08-01")
+
+    assert fichiers == 0
+    assert not (lake_factice / "referentiels/2026-08-01/praticiens.csv").exists()
+    # Le nom du fichier voyage dans `extra`, pas dans le message : c'est ainsi
+    # que le journal du pipeline est structuré (cf. eds/journal.py).
+    assert [r.fichier for r in caplog.records] == ["praticiens.csv"]
+
+
+def test_colonne_declaree_absente_ne_bloque_pas_le_depot(source, lake_factice, sel):
+    """Une colonne déclarée qui disparaît de la source est une régression de
+    schéma. Elle est signalée, pas bloquante : le dépôt du jour passe, et
+    l'aval trace le manque — même règle que les dates illisibles."""
+    deposer(source, "referentiels/2026-08-01/cim10.csv",
+            "code_cim10\nI50\n")
+
+    lake.copier_jour("2026-08-01")
+
+    copie = (lake_factice / "referentiels/2026-08-01/cim10.csv").read_text(
+        encoding="utf-8")
+    assert csv.DictReader(copie.splitlines()).fieldnames == ["code_cim10"]
+
+
 # ── Copie ────────────────────────────────────────────────────────────────
-def test_copier_jour_transforme_les_csv_et_recopie_le_reste(source, lake_factice, sel):
+def test_copier_jour_transforme_les_csv_et_projette_le_reste(source, lake_factice, sel):
     deposer(source, "patients/2026-08-26/patients.csv",
             "patient_id,nir,nom,prenom,birth_date,sex,region_code\n"
             "P0001,1750699123456,Dupont,Marie,1975-06-30,F,35\n")
-    deposer(source, "actes/2026-08-26/actes.parquet", "octets binaires quelconques")
+    ecrire_parquet(
+        source / "actes/2026-08-26/actes.parquet",
+        "SELECT 'S0001' AS stay_id, 'AAAA001' AS code_ccam, "
+        "TIMESTAMP '2026-08-26 10:00:00' AS acte_ts",
+    )
 
     fichiers, lignes = lake.copier_jour("2026-08-26")
     assert (fichiers, lignes) == (2, 1)
@@ -182,10 +292,9 @@ def test_copier_jour_transforme_les_csv_et_recopie_le_reste(source, lake_factice
     assert csv.DictReader(copie.splitlines()).fieldnames == [
         "patient_pseudo", "birth_year", "sex", "region_code"
     ]
-
-    # Une source sans transformation déclarée est recopiée à l'octet près.
-    assert (lake_factice / "actes/2026-08-26/actes.parquet").read_text(
-        encoding="utf-8") == "octets binaires quelconques"
+    assert colonnes_parquet(lake_factice / "actes/2026-08-26/actes.parquet") == [
+        "stay_id", "code_ccam", "acte_ts"
+    ]
 
 
 def test_copier_jour_est_idempotent(source, lake_factice, sel):

@@ -18,14 +18,56 @@ SOURCE = RACINE / "eds-chu-sujet" / "source-filestorage"
 # Zone de travail : copie pseudonymisée des dépôts.
 LAKE = RACINE / "lake"
 
-SOURCES_CONNUES = (
-    "patients",
-    "sejours",
-    "diagnostics",
-    "monitoring",
-    "actes",
-    "referentiels",
-)
+# ── Ce que le lake est autorisé à contenir ───────────────────────────────
+#
+# CETTE DÉCLARATION EST LE CONTRAT DE SORTIE DU LAKE, PAS UNE DESCRIPTION DE
+# LA SOURCE. Elle énumère, fichier par fichier, les colonnes qui ont le droit
+# d'exister dans la copie. `eds.lake` projette chaque fichier dessus avant
+# d'écrire : une colonne que le CHU ajouterait demain — un `patient_id` dans
+# les actes, un `praticien` dans les diagnostics — n'y figure pas, donc elle
+# n'atteint pas le lake, et rien n'a besoin d'être modifié pour cela.
+#
+# C'est une liste blanche, comme celle qui protège déjà `patients` : le
+# principe vaut pour TOUTES les sources, y compris celles qui ne portent pas
+# d'identité aujourd'hui. Une source non déclarée n'est pas lue ; un fichier
+# non déclaré n'est pas copié.
+#
+# Les noms sont ceux d'APRÈS transformation : `patients` et `sejours` passent
+# par la pseudonymisation, et exposent donc `patient_pseudo`, jamais
+# `patient_id`.
+#
+# `diagnostics.json` est le seul format imbriqué : sa déclaration est un
+# dictionnaire, où une valeur non vide décrit les clés admises DANS les
+# objets du tableau. Projeter les seules clés de premier niveau y laisserait
+# passer un champ identifiant ajouté au diagnostic lui-même.
+COLONNES_LAKE = {
+    "patients": {
+        "patients.csv": ("patient_pseudo", "birth_year", "sex", "region_code"),
+    },
+    "sejours": {
+        "sejours.csv": ("stay_id", "patient_pseudo", "service_code",
+                        "admission_ts", "discharge_ts", "admission_mode",
+                        "discharge_mode"),
+    },
+    "diagnostics": {
+        "diagnostics.json": {"stay_id": (), "diagnostics": ("code_cim10", "type")},
+    },
+    "monitoring": {
+        "monitoring.parquet": ("stay_id", "ts", "heart_rate", "spo2", "temp_c"),
+    },
+    "actes": {
+        "actes.parquet": ("stay_id", "code_ccam", "acte_ts"),
+    },
+    "referentiels": {
+        "services.csv": ("service_code", "service_label"),
+        "cim10.csv": ("code_cim10", "libelle"),
+        "ccam.csv": ("code_ccam", "libelle", "tarif_euros"),
+        "description_service.csv": ("service_code", "categorie",
+                                    "capacite_lits", "pole"),
+    },
+}
+
+SOURCES_CONNUES = tuple(COLONNES_LAKE)
 
 # ── Seuils d'alerte clinique ─────────────────────────────────────────────
 #

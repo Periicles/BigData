@@ -109,6 +109,28 @@ def test_les_sources_connues_couvrent_le_depot_et_son_evolution():
     }
 
 
+def test_les_sources_connues_derivent_de_la_declaration():
+    """Une source ne peut pas être connue sans que le contenu qu'elle est
+    autorisée à déposer dans le lake soit décrit : c'est la déclaration qui
+    fait la source, et non l'inverse."""
+    assert config.SOURCES_CONNUES == tuple(config.COLONNES_LAKE)
+
+
+def test_aucune_colonne_identifiante_n_est_declaree():
+    """La déclaration est le contrat de sortie du lake. Aucun nom de colonne
+    portant l'identité ne doit y figurer, pour aucune source."""
+    interdits = {"patient_id", "nir", "nom", "prenom", "birth_date",
+                 "email", "telephone", "adresse", "rpps"}
+    for fichiers in config.COLONNES_LAKE.values():
+        for colonnes in fichiers.values():
+            declarees = set()
+            for cle, valeur in (colonnes.items() if isinstance(colonnes, dict)
+                                else ((c, None) for c in colonnes)):
+                declarees.add(cle)
+                declarees.update(valeur or ())
+            assert not declarees & interdits
+
+
 # ── Langue de restitution ────────────────────────────────────────────────
 def test_langue_par_defaut_est_le_francais(env_vierge):
     """Tout le rendu est en français : l'interface qui l'accompagne doit
