@@ -2309,7 +2309,16 @@ kubectl -n eds exec clickhouse-0 -- sh -c 'clickhouse-client --user eds_pilotage
 
 Le compte de pilotage lit `gold_pilotage.kpi_dms_service` ; il ne voit pas
 `gold_recherche`, ni dans le cluster ni ailleurs. Metabase, branché sur ces
-deux comptes, en hérite exactement comme en local (§ 7.4).
+deux comptes, en hérite exactement comme en local (§ 7.4). Les trois
+tableaux de bord, provisionnés dans le cluster par le Job `eds-restituer`
+(31 questions vérifiées par l'API), sont ceux de la Partie 1, servis depuis
+l'adresse publique de l'équilibreur :
+
+![Tableau de bord Pilotage hospitalier, servi depuis AKS](imgs/aks-metabase-tdb-pilotage.png)
+
+![Tableau de bord Recherche clinique, servi depuis AKS](imgs/aks-metabase-tdb-recherche.png)
+
+![Tableau de bord Activité technique et facturation, servi depuis AKS](imgs/aks-metabase-tdb-evolution.png)
 
 ## 20. La nuit, sans superviseur
 
