@@ -332,8 +332,9 @@ d'environnement, dont l'absence conserve le comportement local — `EDS_SOURCE`,
 Prérequis, en plus de ceux du poste : `az` (connecté à un abonnement où
 l'on est propriétaire), Terraform 1.10 ou plus, `kubectl`. Ni Docker ni
 `.env` ne sont nécessaires : l'image est construite dans Azure, les secrets
-générés par Terraform. Un quota de 2 vCPU en famille B suffit ; la taille du
-nœud et la région se changent dans `terraform.tfvars`.
+générés par Terraform. Le nœud consomme 2 vCPU sur le quota de la famille B
+— un abonnement étudiant en accorde 4 — et la taille du nœud comme la région
+se changent dans `terraform.tfvars`.
 
 ```bash
 cp infra/terraform/terraform.tfvars.example infra/terraform/terraform.tfvars   # abonnement, IP
