@@ -1,0 +1,12 @@
+# Ce que `kubectl apply -k` pose en une fois. Les Jobs ne sont pas listés :
+# immuables, ils sont recréés à chaque exécution par ops/cloud.sh.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - namespace.yaml
+  - secrets.yaml
+  - config.yaml
+  - storage.yaml
+  - clickhouse.yaml
+  - metabase.yaml
+  - cronjob.yaml

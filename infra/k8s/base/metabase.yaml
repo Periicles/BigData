@@ -1,0 +1,90 @@
+# La restitution. Seul composant exposé, et seulement à l'IP de l'opérateur.
+# Base applicative H2 sur un disque : acceptable pour une démonstration,
+# `eds.restitution` reconstruit de toute façon tout ce qu'elle contient.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: metabase-data
+  namespace: eds
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: managed-csi
+  resources:
+    requests:
+      storage: 2Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: metabase
+  namespace: eds
+spec:
+  type: LoadBalancer
+  loadBalancerSourceRanges:
+    - "__IP_AUTORISEE__"
+  selector:
+    app: metabase
+  ports:
+    - port: 3000
+      targetPort: 3000
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: metabase
+  namespace: eds
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: metabase
+  template:
+    metadata:
+      labels:
+        app: metabase
+    spec:
+      containers:
+        - name: metabase
+          # Ligne LTS, patch épinglé — même règle que docker-compose.yml.
+          image: metabase/metabase:v0.58.32.1
+          ports:
+            - containerPort: 3000
+          env:
+            - name: MB_DB_TYPE
+              value: h2
+            - name: MB_DB_FILE
+              value: /metabase-data/metabase.db
+            - name: MB_LOAD_SAMPLE_CONTENT
+              value: "false"
+            - name: JAVA_TIMEZONE
+              value: Europe/Paris
+            - name: JAVA_OPTS
+              value: -Xmx1g
+          resources:
+            requests: { cpu: 250m, memory: 1Gi }
+            limits: { memory: 2Gi }
+          volumeMounts:
+            - name: donnees
+              mountPath: /metabase-data
+            - name: secrets
+              mountPath: /mnt/secrets
+              readOnly: true
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: 3000
+            initialDelaySeconds: 60
+            periodSeconds: 10
+            failureThreshold: 30
+      volumes:
+        - name: donnees
+          persistentVolumeClaim:
+            claimName: metabase-data
+        - name: secrets
+          csi:
+            driver: secrets-store.csi.k8s.io
+            readOnly: true
+            volumeAttributes:
+              secretProviderClass: eds-keyvault
