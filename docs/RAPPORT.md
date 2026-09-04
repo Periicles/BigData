@@ -2230,8 +2230,9 @@ secrets, un autre qui monte un conteneur Blob comme un répertoire : ce sont
 des objets que le sujet demande de savoir manipuler, et qui n'ont pas
 d'équivalent lisible ailleurs. Le prix de ce choix est tenu au plus bas que
 l'abonnement permette : tier Free (le plan de contrôle n'est pas facturé),
-un seul nœud `Standard_B2ms` — 2 vCPU et 8 Go, dans le quota étudiant de
-4 vCPU sur la famille B —, aucune zone de disponibilité, pas de Log
+un seul nœud `Standard_B2ms` — 2 vCPU et 8 Go, soit la moitié des 4 vCPU
+que l'abonnement étudiant accorde sur la famille B —, aucune zone de
+disponibilité, pas de Log
 Analytics. Ce qui manque à ce cluster pour être un cluster de production est
 listé au § 23, et c'est volontaire.
 
@@ -2246,8 +2247,11 @@ Files, en l'occurrence. Il aurait fonctionné sans toucher au code, et il a
 La première est de fond : un entrepôt cloud lit son lake par l'API de
 l'objet, pas à travers un système de fichiers réseau émulé. ClickHouse le
 sait faire nativement — `azureBlobStorage()` lit un blob comme `file()` lit
-un fichier, avec les mêmes formats et la même colonne `_path`. La seconde est
-de prudence : un montage SMB partagé entre deux pods, sur un nœud unique,
+un fichier, avec les mêmes formats et le même schéma déclaré. La provenance,
+elle, ne se lit pas de la même façon : `file()` la tire de la colonne
+virtuelle `_path`, tandis qu'en blob c'est `source_lake` qui écrit le chemin
+demandé — d'où deux expressions différentes pour une même chaîne en base
+(§ 18.1). La seconde raison est de prudence : un montage SMB partagé entre deux pods, sur un nœud unique,
 ajoute une couche dont aucune des deux parties n'a besoin.
 
 Le pipeline, lui, reste sur un système de fichiers : `eds.lake` lit et écrit
