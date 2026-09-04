@@ -190,7 +190,7 @@ déconnecté ne garantit la fiabilité d'aucune de ses mesures.
 ```mermaid
 flowchart TD
     S["source-filestorage/<br/><i>dépôt quotidien du CHU · lecture seule</i><br/>identités en clair"]
-    P{{"Pseudonymisation en flux<br/>HMAC salé · généralisation · suppression"}}
+    P{{"Pseudonymisation en flux<br/>HMAC salé · généralisation · suppression<br/>projection sur les colonnes déclarées"}}
     L["lake/<br/><i>copie pseudonymisée</i>"]
     B["<b>bronze</b><br/>tables typées<br/>partitionnées par jour de dépôt"]
     V["<b>silver</b><br/>nettoyé · dédupliqué · enrichi"]
@@ -502,14 +502,16 @@ frontière, ce que subit la donnée — et l'effet chiffré de chaque opération
 
 #### Source → Lake · pseudonymisation
 
-Seules `patients` et `sejours` sont transformées : ce sont les deux seules
-sources portant de l'identité. Les trois autres sont recopiées à l'octet près.
+Seules `patients` et `sejours` sont **transformées** : ce sont les deux seules
+sources portant de l'identité. Mais **toutes** sont projetées sur les colonnes
+que `config.COLONNES_LAKE` les autorise à déposer — c'est le sujet du § 4.5.
 
 | Opération                       | Effet                                                                                                           |
 | ------------------------------- | --------------------------------------------------------------------------------------------------------------- |
 | `patient_id` → `patient_pseudo` | HMAC-SHA256 salé, tronqué à 64 bits. Appliqué **aux deux sources** avec le même sel, pour préserver la jointure |
 | `birth_date` → `birth_year`     | Généralisation. `1933-12-09` devient `1933`                                                                     |
 | `nir`, `nom`, `prenom`          | **Supprimés** — 3 colonnes sur 7 disparaissent de `patients`                                                    |
+| Projection                      | Chaque fichier réduit aux colonnes déclarées, CSV, JSON et Parquet compris                                       |
 | Volumétrie                      | **inchangée** : 24 797 lignes entrent, 24 797 sortent                                                           |
 
 #### Lake → Bronze · typage et mise en forme tabulaire
@@ -679,6 +681,51 @@ définition a changé (§ 5) :
 | **Quarantaine**    | **926**          | toute ligne écartée, avec son motif, son détail et sa provenance                        | Rien n'est perdu silencieusement                       |
 | **Gold pilotage**  | **66 390**       | 3 faits (6 729 + 12 720 + 40 920 = 60 369) · 3 dimensions (6 021)                        | Modèle dimensionnel interrogeable librement            |
 | **Gold recherche** | **100**          | prévalences 11 · cohortes 89                                                            | Agrégats anonymisés, k ≥ 5, aucun pseudonyme           |
+
+### 4.5 Ce que le lake a le droit de contenir
+
+La pseudonymisation protège ce qu'elle connaît. Elle ne dit rien de ce qu'un
+dépôt contiendra demain — et un entrepôt de santé reçoit des fichiers qu'il
+n'a pas écrits, dont le schéma peut changer sans préavis. Le lake applique
+donc une règle plus large que la seule pseudonymisation : **il ne contient que
+ce qui est déclaré**.
+
+`config.COLONNES_LAKE` énumère, source par source et fichier par fichier, les
+colonnes autorisées à y entrer ; `eds.lake` projette chaque fichier sur cette
+déclaration avant d'écrire, quel que soit son format. C'est le principe qui
+gouverne déjà `patients` — sa transformation construit un dictionnaire neuf à
+quatre clés, où une colonne `email` ajoutée en amont ne peut pas entrer —
+appliqué à toutes les sources sans exception.
+
+L'exception n'aurait d'ailleurs pas de sens. `actes`, `monitoring` et
+`diagnostics` ne portent pas d'identité aujourd'hui, mais elles sont liées au
+patient par `stay_id` : un `patient_id` ajouté au Parquet des actes, un nom de
+praticien ajouté au diagnostic, et l'identité traverserait le lake en clair
+sans que rien, en aval, ne la rattrape. Une source qui ne porte pas
+d'identité n'est pas une source qui n'en portera jamais.
+
+Trois conséquences, toutes voulues :
+
+- une colonne non déclarée n'atteint pas le lake, et **aucun code n'a besoin
+  d'être modifié** pour cela ;
+- un fichier dont le contenu n'est pas décrit — un `praticiens.csv` déposé
+  demain dans les référentiels — n'est **pas copié du tout** : on ne sait pas
+  ce qu'il contient, donc on ne sait pas qu'il est inoffensif ;
+- le lake n'est pas une copie à l'octet, et c'est le prix assumé de la règle.
+  Le CSV est réécrit ligne à ligne, le JSON objet par objet — imbrications
+  comprises, sans quoi un champ ajouté au diagnostic lui-même passerait sous
+  une projection de premier niveau — et le Parquet est reprojeté par DuckDB,
+  qui ne lit que les colonnes retenues.
+
+Les écarts sont journalisés dans les deux sens : une colonne apparue en amont
+est signalée **et** retirée ; une colonne déclarée qui disparaît de la source
+est signalée sans bloquer le dépôt du jour. C'est la même règle que pour les
+dates illisibles — détecter et tracer, jamais interrompre l'ingestion pour une
+anomalie de source.
+
+La déclaration est aussi une documentation exécutable : elle dit en un coup
+d'œil ce que le lake est censé contenir, et `tests/test_config.py` vérifie
+qu'aucun nom de colonne identifiante n'y a été inscrit par mégarde.
 
 ## 5. Le modèle
 
@@ -1510,6 +1557,25 @@ développement, où chaque relance de test ajoute ses propres lignes) ; les
 deux destinations restent cohérentes entre elles, puisqu'écrites par le même
 code au même instant (`Pipeline.etape`, § 10).
 
+**Trois niveaux, et une règle qui les sépare.** `INFO` décrit le déroulement
+normal — étape terminée, source chargée, source absente un jour où elle n'est
+pas déposée. `WARNING` signale ce qui mérite d'être lu sans interrompre :
+une colonne apparue en amont et retirée à l'entrée du lake, un fichier non
+déclaré qui n'a pas été copié, une connexion Metabase en double. `ERROR`
+accompagne l'échec d'une étape.
+
+La règle tient en une phrase : **un avertissement qui décrit une situation
+normale n'en est pas un.** Le calendrier de dépôt du CHU est irrégulier par
+conception — `patients` est un snapshot, `actes` n'est déposée qu'une fois —
+si bien qu'une source sans dépôt un jour donné est le cas nominal et se
+journalise en `INFO`. Émise en `WARNING`, elle produisait 57 avertissements
+par exécution complète, et **7 421 des 7 422 avertissements de l'histoire du
+projet** portaient ce seul motif : le seul avertissement réel jamais émis y
+était noyé. Un exploitant apprend en trois exécutions que les `WARNING` ne
+veulent rien dire, et manque celui qui compte ; une supervision branchée sur
+ce niveau — la façon la plus courante de la brancher — se déclencherait
+chaque nuit. `tests/test_warehouse.py` fige la règle pour cette source.
+
 **Ce qui n'y entre jamais : aucune donnée de santé, aucun pseudonyme, aucun
 mot de passe ni jeton.** Les messages ne portent que des métadonnées
 d'exécution — nom d'étape, jour, compte de lignes, type d'exception. Ce n'est
@@ -1659,7 +1725,7 @@ sont donc gardés.
 | État de l'entrepôt, sans rien modifier | `.venv/bin/python -m eds.run --etat` | jours ingérés/en attente, volumes par couche, cinq dernières étapes |
 | Provisionnement de la restitution | `.venv/bin/python -m eds.restitution` | (re)crée connexions, comptes, droits et tableaux de bord Metabase — idempotent, ~6 s au premier passage, ~1,2 s ensuite |
 | État de Metabase, sans rien modifier | `.venv/bin/python -m eds.restitution --etat` | connexions et tableaux de bord déjà provisionnés |
-| Tests unitaires, hors ligne | `.venv/bin/python -m pytest` | 85 tests sur les fonctions pures — pseudonymisation, découpage SQL, résolution des référentiels, seuils. **Ne demandent ni Docker ni entrepôt**, et s'exécutent en moins d'une seconde |
+| Tests unitaires, hors ligne | `.venv/bin/python -m pytest` | 102 tests sur les fonctions pures — pseudonymisation, découpage SQL, résolution des référentiels, seuils. **Ne demandent ni Docker ni entrepôt**, et s'exécutent en moins d'une seconde |
 | Contrôle des 428 propriétés | `.venv/bin/python -m tests.verifier` | rejoue les cinq sections de vérification (dont `conformite`, § 6) |
 | Démonstrations rejouables | `.venv/bin/python -m tests.demontrer` | dont `reprise` (§ 10) et `restitution` (cloisonnement vu depuis Metabase) |
 
@@ -1990,34 +2056,47 @@ pour un dénominateur inconnu, écart chiffré avec les services non décrits.
 
 ### 17.2 Ce qu'il a fallu accepter
 
-**Faire évoluer une table gold demande de la supprimer une fois.**
-`30_gold.sql` n'exécute que des `CREATE TABLE IF NOT EXISTS`, qui n'ajoutent
-pas les colonnes nouvelles à une table déjà présente : `dim_service` a dû être
-supprimée pour être reconstruite avec `categorie`, `capacite_lits` et `pole`.
-C'est sans perte — gold est intégralement dérivé de silver, et se reconstruit
-en une exécution — mais c'est une manipulation manuelle, à faire une fois, que
-le pipeline ne prend pas en charge. Une évolution ultérieure du schéma gold
-demandera le même geste. L'alternative, un `ALTER TABLE ... ADD COLUMN IF NOT
-EXISTS` par colonne, ajouterait une migration versionnée à maintenir pour une
-couche qui n'a précisément aucune migration à subir : le geste manuel a été
-préféré, mais il doit être connu.
+**Ajouter une colonne à une table gold a demandé un geste manuel, une fois.**
+Le pipeline ne supprime aucune table : ses deux seuls `DROP` portent sur une
+partition de bronze, pour rendre l'ingestion d'un jour rejouable. Mais
+`30_gold.sql` n'exécute que des `CREATE TABLE IF NOT EXISTS`, qui ne font rien
+sur une table déjà présente : pour que `dim_service` gagne `categorie`,
+`capacite_lits` et `pole`, il a fallu la supprimer une fois à la main, le
+temps qu'elle se recrée au schéma voulu.
 
-**Le pipeline émet davantage d'avertissements.** `charger_bronze_jour`
-journalise `source absente` pour chaque jour sans dépôt d'une source donnée.
-`actes` n'étant déposée qu'une fois, elle en produit 28 à chaque exécution
-complète, portant le total de 29 à 57. Le motif préexistait — `patients` en
-produisait déjà 26 — mais le volume double, et un `WARNING` qui décrit une
-situation parfaitement normale use le signal. Les faire passer en `INFO`
-change le comportement de journalisation décrit au § 11 : le point est
-signalé plutôt que tranché unilatéralement.
+Le geste est sans risque, et c'est ce qui l'a rendu acceptable : **gold est
+intégralement dérivé de silver et se reconstruit en une exécution**. Rien ne
+s'y perd, puisque rien n'y est saisi. Il reste néanmoins manuel, et une
+évolution ultérieure du schéma gold le redemandera. L'alternative — un
+`ALTER TABLE ... ADD COLUMN IF NOT EXISTS` par colonne — ajouterait une
+migration versionnée à maintenir pour une couche qui n'a précisément aucune
+migration à subir. Le geste ponctuel a donc été préféré, mais il doit être
+connu de qui reprendra le projet.
 
-**Un garde-fou reste à poser.** `copier_jour` recopie à l'octet toute source
-sans transformation déclarée. La liste blanche de `_ligne_patient` protège
-explicitement `patients` contre une colonne identifiante que le CHU
-ajouterait demain ; `actes` n'a pas cet équivalent. Le fichier ne porte
-aujourd'hui que `stay_id`, `code_ccam` et `acte_ts` — vérifié — mais un
-`patient_id` ajouté à la source traverserait le lake en clair. Le contrôle
-manque, et son absence est une dette assumée, pas un oubli.
+### 17.3 La règle posée plutôt que le cas traité
+
+**Une source de plus, donc une règle générale plutôt qu'un cas particulier.**
+`actes` arrive en Parquet, un format binaire, et sans transformation à
+appliquer : la protection écrite pour `patients` — une liste blanche de
+colonnes — ne la couvrait pas. Deux réponses étaient possibles : décrire les
+colonnes d'`actes` seule, ou faire de la déclaration la règle commune à
+toutes les sources. La seconde a été retenue, et c'est le § 4.5. Décrire
+`actes` seule aurait laissé la question entière pour la source suivante, et
+une protection qui dépend de la vigilance de celui qui ajoute la source n'en
+est pas une. Même raisonnement que pour la résolution des référentiels par
+fichier, traitée plus haut : l'évolution ne demandait qu'un cas, elle a été
+l'occasion de poser la règle.
+
+**Le même raisonnement a tranché le niveau des avertissements.**
+`charger_bronze_jour` journalise `source absente` pour chaque jour sans dépôt
+d'une source donnée. `actes` n'étant déposée qu'une fois, elle en ajoutait 28
+par exécution complète, portant le total de 29 à 57. Là encore, deux réponses
+étaient possibles : taire le cas d'`actes`, ou reconnaître que le motif
+n'était pas un avertissement du tout. Le calendrier de dépôt du CHU est
+irrégulier par conception ; une source absente un jour où elle n'est pas
+déposée décrit le normal. Elle est donc journalisée en `INFO`, et `WARNING`
+redevient ce qu'il doit être — le niveau de ce qui mérite d'être lu. Le § 11
+énonce la règle pour les trois niveaux.
 
 # Validation des chiffres
 
@@ -2132,7 +2211,7 @@ identiquement le fait et son indicateur ne serait détectée que par la
 confrontation à la référence — laquelle ne couvre pas tous les chiffres.
 
 **Le nombre de contrôles n'est pas une garantie.** 428 propriétés vérifiées et
-94 tests unitaires ne disent rien de ce qui n'est pas mesuré. Deux des défauts
+102 tests unitaires ne disent rien de ce qui n'est pas mesuré. Deux des défauts
 racontés au chapitre suivant sont passés à travers tous ces contrôles : ils
 n'ont été trouvés qu'en fabriquant une donnée qui n'existait pas, et en lisant
 le document produit.
@@ -2250,19 +2329,24 @@ juste de son côté.
 
 ## Un avertissement qui décrit le normal cesse d'être lu
 
-Le pipeline émet 57 avertissements `source absente` par exécution complète —
-28 pour les actes, déposés une seule fois, 26 pour les patients, qui sont un
-snapshot. Aucun ne signale une anomalie : tous décrivent un calendrier de dépôt
-irrégulier **par conception**.
+Le pipeline émettait 57 avertissements `source absente` par exécution complète
+— 28 pour les actes, déposés une seule fois, 26 pour les patients, qui sont un
+snapshot. Aucun ne signalait une anomalie : tous décrivaient un calendrier de
+dépôt irrégulier **par conception**.
 
 Le motif préexistait, sous le seuil où l'on s'en aperçoit. L'évolution l'a
-doublé, et l'a rendu visible.
+doublé, et l'a rendu visible. Le journal du projet donne la mesure exacte de
+ce que cela coûte : **7 421 des 7 422 avertissements jamais émis** portaient
+ce seul motif. Le seul avertissement réel de toute l'histoire du dépôt — une
+connexion Metabase en double — était noyé dedans.
 
 > **Ce que nous en retenons.** Un `WARNING` qui décrit une situation normale use
 > le signal : l'exploitant qui en voit 57 prend l'habitude de ne pas les lire, et
-> rate le jour où il y en a un vrai. La dette est énoncée au § 17.2 plutôt que
-> corrigée à la hâte, parce qu'elle touche un comportement de journalisation que
-> la partie 2 décrit en détail.
+> rate le jour où il y en a un vrai. Le motif est passé en `INFO` et `WARNING`
+> est redevenu le niveau de ce qui mérite d'être lu (§ 11). La leçon n'est pas
+> le réglage lui-même, c'est qu'un niveau de journalisation se décide sur ce
+> que le message signifie pour celui qui le lira, jamais sur la gravité
+> apparente du mot.
 
 ## Ne rien casser ne coûte rien — si l'on s'y est préparé avant
 

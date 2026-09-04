@@ -19,8 +19,9 @@ bord sont entièrement scriptés — rien à cliquer, rien à régler à la main
 source-filestorage/     dépôt du CHU, lecture seule (identités en clair)
         │
         │  pseudonymisation en flux — les identités ne touchent jamais le disque
+        │  projection — seules les colonnes déclarées sont écrites
         ▼
-   lake/                copie pseudonymisée
+   lake/                copie pseudonymisée, réduite au nécessaire
         ▼
    bronze               tables typées, partitionnées par jour de dépôt
         ▼
@@ -301,7 +302,7 @@ réelle n'exerce.
 
 ```bash
 .venv/bin/pip install -r requirements-dev.txt
-.venv/bin/python -m pytest              # 94 tests unitaires, 0,1 s, hors ligne
+.venv/bin/python -m pytest              # 102 tests unitaires, 0,1 s, hors ligne
 ```
 
 ```bash
@@ -403,7 +404,7 @@ Les cinq contraintes du sujet sont vérifiables en une commande
 | Contrainte | Mise en œuvre | Où |
 |---|---|---|
 | **Pseudonymisation** | HMAC-SHA256 salé appliqué **pendant la copie** : les identités ne sont écrites nulle part. Aucune colonne `nir`, `nom`, `prenom`, `birth_date` ni `patient_id` n'existe dans l'entrepôt. | `eds/lake.py` |
-| **Minimisation** | Trois colonnes supprimées à la source, date de naissance généralisée à l'année. La base recherche n'expose ni `birth_year`, ni `patient_pseudo`, ni `region`. | `eds/lake.py`, `sql/31_gold_transform.sql` |
+| **Minimisation** | Trois colonnes supprimées à la source, date de naissance généralisée à l'année. Chaque fichier est en outre projeté sur les colonnes que `COLONNES_LAKE` déclare : ce qui n'y figure pas n'entre pas dans le lake. La base recherche n'expose ni `birth_year`, ni `patient_pseudo`, ni `region`. | `eds/config.py`, `eds/lake.py`, `sql/31_gold_transform.sql` |
 | **Cloisonnement** | Deux bases séparées, quatre comptes bornés, droits posés **colonne par colonne** sur la couche gold. Le refus vient du moteur. | `sql/50_droits.sql` |
 | **Petits effectifs** | `HAVING count(DISTINCT patient) >= 5` appliqué **à l'écriture** : aucune cohorte sous seuil n'existe dans la base. | `sql/31_gold_transform.sql` |
 | **Traçabilité** | Chaque ligne porte son fichier d'origine, son horodatage d'ingestion et l'identifiant du run. Le journal `ops.executions` conserve chaque étape, succès comme échec. | `sql/10_bronze.sql`, `sql/60_ops.sql` |
@@ -422,6 +423,11 @@ Détaillés et justifiés dans [`docs/RAPPORT.md`](docs/RAPPORT.md).
 
 - **La pseudonymisation a lieu pendant la copie**, ligne par ligne. Les
   identités ne sont écrites nulle part, pas même dans un répertoire temporaire.
+- **Le lake ne contient que ce qui est déclaré.** Chaque source énumère, fichier
+  par fichier, les colonnes qu'elle a le droit d'y déposer ; tout le reste est
+  retiré avant écriture, en CSV comme en JSON ou en Parquet. Une colonne
+  identifiante ajoutée demain en amont ne traverse pas, sans qu'une ligne de
+  code ait à changer.
 - **ClickHouse lit les fichiers lui-même** (`file()` sur un montage en lecture
   seule). Python n'envoie que du SQL : aucune donnée ne transite par sa mémoire.
 - **Le cloisonnement est physique** — deux bases, deux comptes, droits disjoints,
@@ -446,8 +452,8 @@ requirements.txt         2 dépendances — le pipeline
 requirements-dev.txt     pytest — les tests unitaires, hors du chemin d'exécution
 
 eds/                     le pipeline
-  config.py              chemins, secrets et seuils, sans dépendance externe
-  lake.py                copie transformante en flux + pseudonymisation
+  config.py              chemins, secrets, seuils et colonnes autorisées dans le lake
+  lake.py                copie projetante et transformante + pseudonymisation
   warehouse.py           client ClickHouse, exécution SQL, chargement bronze
   journal.py             journalisation JSON + console
   run.py                 orchestrateur — point d'entrée
@@ -468,7 +474,7 @@ sql/                     toute la transformation, versionnée
 tests/
   verifier.py            459 contrôles contre l'entrepôt vivant
   demontrer.py           cinq démonstrations, par injection puis remise en état
-  test_lake.py           94 tests unitaires — fonctions pures, hors ligne
+  test_lake.py           102 tests unitaires — fonctions pures, hors ligne
   test_warehouse.py      (pytest, sans Docker ni ClickHouse)
   test_config.py
 
@@ -487,11 +493,5 @@ docs/                    le rapport, ses captures, et le script qui le rend en P
 | [`exploration/RAPPORT-EXPLORATION.md`](exploration/RAPPORT-EXPLORATION.md) | L'état des lieux des sources, établi **avant** toute décision d'architecture : volumétrie, anomalies chiffrées, mesure du risque de ré-identification. |
 | [`sql/99_verifications.sql`](sql/99_verifications.sql) | Requêtes d'inspection à exécuter dans la console SQL, commentées. |
 
-Le PDF se régénère depuis le Markdown — il ne peut donc pas en diverger :
-
-```bash
-python3 -m venv /tmp/pdfvenv && /tmp/pdfvenv/bin/pip install markdown pygments
-/tmp/pdfvenv/bin/python docs/en_pdf.py docs/RAPPORT.md /tmp/rapport.html "Rapport"
-"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless \
-    --no-pdf-header-footer --print-to-pdf=docs/RAPPORT.pdf file:///tmp/rapport.html
-```
+`docs/RAPPORT.md` fait foi ; `docs/RAPPORT.pdf` en est le rendu de lecture,
+sommaire, diagrammes et captures compris.
