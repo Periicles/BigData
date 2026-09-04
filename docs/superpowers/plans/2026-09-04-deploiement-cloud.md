@@ -2026,7 +2026,7 @@ Expected : journaux du pipeline se terminant par l'étape `droits` réussie, cod
 
 ```bash
 kubectl -n eds exec clickhouse-0 -- sh -c 'clickhouse-client --user eds_pilotage --password "$(cat /mnt/secrets/ch-pilotage-password)" -q "SELECT count() FROM gold_recherche.coh_prevalence"' ; echo "code $?"
-kubectl -n eds exec clickhouse-0 -- sh -c 'clickhouse-client --user eds_pilotage --password "$(cat /mnt/secrets/ch-pilotage-password)" -q "SELECT count() FROM gold_pilotage.dms_service"'
+kubectl -n eds exec clickhouse-0 -- sh -c 'clickhouse-client --user eds_pilotage --password "$(cat /mnt/secrets/ch-pilotage-password)" -q "SELECT count() FROM gold_pilotage.kpi_dms_service"'
 ```
 
 Expected : la première commande échoue avec `Not enough privileges` (code non nul), la seconde renvoie un nombre. Conserver la sortie exacte pour le rapport (§ 19).

@@ -2302,10 +2302,12 @@ dans le volume projeté plutôt qu'affiché :
 kubectl -n eds exec clickhouse-0 -- sh -c 'clickhouse-client --user eds_pilotage \
   --password "$(cat /mnt/secrets/ch-pilotage-password)" \
   -q "SELECT count() FROM gold_recherche.coh_prevalence"'
-# → Code: 497. DB::Exception: eds_pilotage: Not enough privileges. …
+# → Code: 497. DB::Exception: eds_pilotage: Not enough privileges. To execute
+#   this query, it's necessary to have the grant SELECT for at least one column
+#   on gold_recherche.coh_prevalence. (ACCESS_DENIED)
 ```
 
-Le compte de pilotage lit `gold_pilotage.dms_service` ; il ne voit pas
+Le compte de pilotage lit `gold_pilotage.kpi_dms_service` ; il ne voit pas
 `gold_recherche`, ni dans le cluster ni ailleurs. Metabase, branché sur ces
 deux comptes, en hérite exactement comme en local (§ 7.4).
 
