@@ -224,3 +224,27 @@ def test_actes_a_son_chargeur_bronze():
     sql = fabriquer("2026-08-29", "run42")
     assert "bronze.actes" in sql and "actes.parquet" in sql
     assert "2026-08-29" in sql and "run42" in sql
+
+
+# ── Niveau de journalisation ─────────────────────────────────────────────
+def test_source_absente_est_une_information_pas_un_avertissement(lake_factice, caplog):
+    """Le calendrier de dépôt du CHU est irrégulier PAR CONCEPTION : `patients`
+    est un snapshot, `actes` n'est déposée qu'une fois. Une source sans dépôt
+    un jour donné est donc le cas nominal, pas une anomalie.
+
+    Un `WARNING` qui décrit le normal use le signal : sur l'historique du
+    projet, 7 421 avertissements sur 7 422 portaient ce seul motif, et le
+    seul avertissement réel y était noyé. Le niveau `WARNING` doit rester
+    réservé à ce qui mérite d'être lu.
+    """
+    import logging
+
+    caplog.set_level(logging.INFO, logger="eds.warehouse")
+    # Aucune source dans le lake : aucun chargement, donc le client n'est
+    # jamais sollicité — la fonction se contente de journaliser les absences.
+    resultats = warehouse.charger_bronze_jour(None, "2026-08-01", "run-de-test")
+
+    assert resultats == {}
+    absences = [r for r in caplog.records if r.message == "source absente"]
+    assert len(absences) == len(warehouse.CHARGEURS)
+    assert {r.levelname for r in absences} == {"INFO"}

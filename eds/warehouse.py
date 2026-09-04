@@ -205,7 +205,13 @@ def charger_bronze_jour(ch: Client, jour: str, run_id: str) -> dict[str, int]:
     resultats: dict[str, int] = {}
     for source, (table, fabriquer_sql) in CHARGEURS.items():
         if not (LAKE / source / jour).is_dir():
-            journal.warning("source absente", extra={"source": source, "jour": jour})
+            # INFO, et non WARNING. Le calendrier de dépôt du CHU est
+            # irrégulier PAR CONCEPTION — `patients` est un snapshot, `actes`
+            # n'est déposée qu'une fois — donc une source sans dépôt un jour
+            # donné est le cas nominal. Un avertissement qui décrit le normal
+            # use le signal : l'exploitant cesse de lire des `WARNING` dont
+            # aucun ne mérite d'être lu, et manque le jour où il y en a un.
+            journal.info("source absente", extra={"source": source, "jour": jour})
             continue
 
         ch.command(f"ALTER TABLE {table} DROP PARTITION '{jour}'")
