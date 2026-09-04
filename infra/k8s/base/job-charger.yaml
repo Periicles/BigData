@@ -1,0 +1,48 @@
+# Chargement initial : relit tout le dépôt. Recréé à chaque `ops/cloud.sh
+# charger`, un Job étant immuable.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: eds-charger
+  namespace: eds
+spec:
+  backoffLimit: 3
+  template:
+    metadata:
+      labels:
+        app: eds-pipeline
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: pipeline
+          image: __ACR_LOGIN_SERVER__/eds-pipeline:__TAG__
+          command: ["python", "-m", "eds.run", "--tout"]
+          envFrom:
+            - configMapRef: { name: eds-config }
+            - secretRef: { name: eds-secrets }
+          resources:
+            requests: { cpu: 100m, memory: 512Mi }
+            limits: { memory: 1Gi }
+          volumeMounts:
+            - name: source
+              mountPath: /data/source
+              readOnly: true
+            - name: lake
+              mountPath: /data/lake
+            - name: secrets
+              mountPath: /mnt/secrets
+              readOnly: true
+      volumes:
+        - name: source
+          persistentVolumeClaim:
+            claimName: source
+            readOnly: true
+        - name: lake
+          persistentVolumeClaim:
+            claimName: lake
+        - name: secrets
+          csi:
+            driver: secrets-store.csi.k8s.io
+            readOnly: true
+            volumeAttributes:
+              secretProviderClass: eds-keyvault

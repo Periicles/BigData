@@ -116,7 +116,7 @@ ignoré.
 | Données source | `eds-chu-sujet/source-filestorage/` — voir ci-dessus |
 
 Les images sont **épinglées à une version exacte** dans `docker-compose.yml` —
-`clickhouse-server:25.8` et `metabase:v0.58.32` — pour que deux clones du dépôt
+`clickhouse-server:25.8.33.6` et `metabase:v0.58.32.1` — pour que deux clones du dépôt
 pris à deux dates donnent le même environnement. ClickHouse reste en 25.8
 délibérément : la 26.x renvoie les refus de droits en HTTP 403, statut sur
 lequel le pilote embarqué dans Metabase ne lit plus le message d'erreur, et la
@@ -320,6 +320,57 @@ du pipeline, même règle que le journal ClickHouse.
 
 ---
 
+## Déploiement cloud
+
+Le même entrepôt tourne sur Azure, pour une démonstration jetable : le socle
+est décrit en Terraform (`infra/terraform/`), les composants en manifestes
+Kubernetes (`infra/k8s/`), l'image du pipeline dans `infra/Dockerfile`. Rien
+ne bifurque dans le code : chaque différence avec le poste est une variable
+d'environnement, dont l'absence conserve le comportement local — `EDS_SOURCE`,
+`EDS_LAKE`, `EDS_LAKE_LECTEUR=blob`, `CH_HOST`, `MB_URL`.
+
+Prérequis, en plus de ceux du poste : `az` (connecté à un abonnement où
+l'on est propriétaire), Terraform 1.10 ou plus, `kubectl`. Ni Docker ni
+`.env` ne sont nécessaires : l'image est construite dans Azure, les secrets
+générés par Terraform. Un quota de 2 vCPU en famille B suffit ; la taille du
+nœud et la région se changent dans `terraform.tfvars`.
+
+```bash
+cp infra/terraform/terraform.tfvars.example infra/terraform/terraform.tfvars   # abonnement, IP
+az login
+ops/cloud.sh deployer      # ~10 min : AKS, stockage, coffre, registre, image, manifestes
+ops/cloud.sh charger       # eds.run --tout, dans le cluster
+ops/cloud.sh restituer     # eds.restitution, puis l'adresse de Metabase
+ops/cloud.sh etat          # ce qui tourne
+ops/cloud.sh image         # reconstruit l'image depuis HEAD, rend les manifestes
+ops/cloud.sh rendre        # régénère les manifestes après un changement d'infra/k8s/base
+ops/cloud.sh detruire      # tout, y compris l'IP publique
+```
+
+| Sur le poste | Dans le cluster | Pourquoi |
+| --- | --- | --- |
+| `lake/` monté dans ClickHouse, lu par `file()` | conteneur Blob `lake`, lu par `azureBlobStorage()` via la named collection `eds_lake` | pas de volume partagé entre pods ; la clé du stockage vit dans la configuration du serveur, jamais dans une requête |
+| `source-filestorage/` et `lake/` sur disque | les deux conteneurs Blob montés par blobfuse dans le pod du pipeline, avec l'identité du nœud | `eds.lake` voit un système de fichiers ; aucune clé dans le cluster pour ce chemin |
+| `.env` | Key Vault, projeté par l'addon CSI en Secret `eds-secrets` | aucun secret dans un manifeste ; tous générés par Terraform, jamais lus par un humain |
+| `cron` + `eds.supervision` | CronJob `eds-nuit`, `concurrencyPolicy: Forbid`, `backoffLimit: 3` | verrou et relance sont natifs à l'orchestrateur |
+| `localhost:3000` | Service LoadBalancer restreint à `ip_autorisee` | ClickHouse, lui, n'est jamais exposé : ClusterIP seulement |
+
+Si une étape échoue, la relancer suffit : chaque verbe est idempotent.
+
+| Symptôme | Cause | Correction |
+| --- | --- | --- |
+| `403` sur un secret Key Vault pendant `deployer` | le rôle RBAC n'est pas encore effectif | relancer `ops/cloud.sh deployer` ; Terraform reprend où il en était |
+| `aucune image construite` | clone frais, ou `detruire` passé par là | `ops/cloud.sh deployer` (ou `image` si l'infrastructure existe déjà) |
+| pod en `ImagePullBackOff` | manifestes rendus sur un autre tag que l'image | `ops/cloud.sh image`, puis `kubectl apply -k infra/k8s/rendu` |
+| pod en `Pending`, `Insufficient cpu` | nœud trop petit pour les requêtes des pods | `taille_noeud` dans `terraform.tfvars`, puis `deployer` |
+| `ClickHouse ne voit pas le lake` | named collection ou clé du stockage en défaut | `kubectl -n eds logs clickhouse-0`, puis `deployer` pour régénérer `lake.xml` |
+| Metabase injoignable depuis le navigateur | `ip_autorisee` n'est plus votre adresse | corriger `terraform.tfvars`, puis `deployer` |
+
+Coût, cluster allumé : environ 2,8 €/jour (nœud B2ms, équilibreur, registre,
+disques). Une démonstration de trois heures coûte moins d'un euro ;
+`detruire` ramène à zéro. Le rapport, Partie 4, expose les choix et leurs
+limites.
+
 ---
 
 ## Vérifier
@@ -334,7 +385,7 @@ réelle n'exerce.
 
 ```bash
 .venv/bin/pip install -r requirements-dev.txt
-.venv/bin/python -m pytest              # 129 tests unitaires, 0,1 s, hors ligne
+.venv/bin/python -m pytest              # 169 tests unitaires, 0,1 s, hors ligne
 ```
 
 ```bash
@@ -479,7 +530,7 @@ Détaillés et justifiés dans [`docs/RAPPORT.md`](docs/RAPPORT.md).
 ## Organisation du dépôt
 
 ```
-docker-compose.yml       ClickHouse 25.8 et Metabase v0.58.32, versions épinglées
+docker-compose.yml       ClickHouse 25.8.33.6 et Metabase v0.58.32.1, versions épinglées
 requirements.txt         2 dépendances — le pipeline
 requirements-dev.txt     pytest — les tests unitaires, hors du chemin d'exécution
 
@@ -507,7 +558,7 @@ sql/                     toute la transformation, versionnée
 tests/
   verifier.py            459 contrôles contre l'entrepôt vivant
   demontrer.py           cinq démonstrations, par injection puis remise en état
-  test_lake.py           129 tests unitaires — hors ligne, sans Docker
+  test_lake.py           169 tests unitaires — hors ligne, sans Docker
   test_warehouse.py      (pytest, en une fraction de seconde)
   test_config.py
   test_run.py            ce que l'orchestrateur tient pour déjà ingéré
@@ -515,6 +566,11 @@ tests/
 
 exploration/             profilage initial des sources (DuckDB)
 ops/crontab.example      planification — appelle eds.supervision
+ops/cloud.sh             déployer, charger, restituer, détruire sur Azure
+infra/                   déploiement cloud
+  Dockerfile             image du pipeline — code seul, non root
+  terraform/             socle Azure : stockage, coffre, registre, AKS
+  k8s/base/              manifestes : ClickHouse, Metabase, pipeline, secrets
 docs/                    le rapport, son rendu PDF et ses captures
 ```
 
@@ -524,7 +580,7 @@ docs/                    le rapport, son rendu PDF et ses captures
 
 | Document | Contenu |
 |---|---|
-| [`docs/RAPPORT.md`](docs/RAPPORT.md) | **Le rapport de conception**, en trois parties — l'interface d'analyse, l'automatisation, l'évolution demandée par le CHU — puis la validation des chiffres et les leçons du projet. Le document à lire en premier. Également fourni en [PDF](docs/RAPPORT.pdf), sommaire compris. |
+| [`docs/RAPPORT.md`](docs/RAPPORT.md) | **Le rapport de conception**, en quatre parties — l'interface d'analyse, l'automatisation, l'évolution demandée par le CHU, le déploiement cloud — puis la validation des chiffres et les leçons du projet. Le document à lire en premier. Également fourni en [PDF](docs/RAPPORT.pdf), sommaire compris. |
 | [`exploration/RAPPORT-EXPLORATION.md`](exploration/RAPPORT-EXPLORATION.md) | L'état des lieux des sources, établi **avant** toute décision d'architecture : volumétrie, anomalies chiffrées, mesure du risque de ré-identification. |
 | [`sql/99_verifications.sql`](sql/99_verifications.sql) | Requêtes d'inspection à exécuter dans la console SQL, commentées. |
 

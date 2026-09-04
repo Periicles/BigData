@@ -1,0 +1,129 @@
+# Le moteur. Jamais exposé hors du cluster : seul le Service ClusterIP le
+# joint, donc Metabase et le pipeline. Le cloisonnement pilotage/recherche
+# reste prononcé par lui (sql/50_droits.sql), pas par le réseau.
+apiVersion: v1
+kind: Service
+metadata:
+  name: clickhouse
+  namespace: eds
+spec:
+  type: ClusterIP
+  selector:
+    app: clickhouse
+  ports:
+    - name: http
+      port: 8123
+    - name: natif
+      port: 9000
+---
+# L'image crée le compte d'administration avec `access_management`, mais
+# pas `named_collection_control` : sans ce droit, `azureBlobStorage(eds_lake)`
+# est refusé au pipeline. Ce fragment users.d le lui donne — il est fusionné
+# avec la définition posée par l'image au démarrage.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: clickhouse-users
+  namespace: eds
+data:
+  named_collection_control.xml: |
+    <clickhouse>
+      <users>
+        <eds_admin>
+          <named_collection_control>1</named_collection_control>
+        </eds_admin>
+      </users>
+    </clickhouse>
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: clickhouse
+  namespace: eds
+spec:
+  serviceName: clickhouse
+  replicas: 1
+  selector:
+    matchLabels:
+      app: clickhouse
+  template:
+    metadata:
+      labels:
+        app: clickhouse
+    spec:
+      containers:
+        - name: clickhouse
+          # 25.8 : dernière ligne LTS compatible avec Metabase (la 26.x casse
+          # l'affichage des refus de droits). Patch épinglé.
+          image: clickhouse/clickhouse-server:25.8.33.6
+          ports:
+            - containerPort: 8123
+            - containerPort: 9000
+          env:
+            - name: CLICKHOUSE_USER
+              valueFrom:
+                configMapKeyRef: { name: eds-config, key: CH_ADMIN_USER }
+            - name: CLICKHOUSE_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: eds-secrets, key: CH_ADMIN_PASSWORD }
+            # CREATE USER / GRANT en SQL : le cloisonnement vit dans des
+            # fichiers .sql versionnés, pas dans du XML manuel.
+            - name: CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT
+              value: "1"
+          resources:
+            requests: { cpu: 300m, memory: 2Gi }
+            limits: { memory: 3Gi }
+          volumeMounts:
+            - name: donnees
+              mountPath: /var/lib/clickhouse
+            # La named collection `eds_lake`, rendue par Terraform avec la
+            # chaîne de connexion. `subPath` pour ne pas masquer le reste de
+            # config.d (dont docker_related_config.xml, qui ouvre l'écoute).
+            - name: secrets
+              mountPath: /etc/clickhouse-server/config.d/lake.xml
+              subPath: lake.xml
+              readOnly: true
+            # Le même volume, entier : sert aux démonstrations de refus
+            # (`kubectl exec … clickhouse-client --user eds_pilotage`), qui
+            # lisent le mot de passe dans le fichier plutôt que de l'afficher.
+            - name: secrets
+              mountPath: /mnt/secrets
+              readOnly: true
+            - name: utilisateurs
+              mountPath: /etc/clickhouse-server/users.d/named_collection_control.xml
+              subPath: named_collection_control.xml
+              readOnly: true
+          readinessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - clickhouse-client --user "$CLICKHOUSE_USER" --password "$CLICKHOUSE_PASSWORD" --query "SELECT 1"
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            failureThreshold: 20
+          livenessProbe:
+            httpGet:
+              path: /ping
+              port: 8123
+            initialDelaySeconds: 60
+            periodSeconds: 15
+      volumes:
+        - name: secrets
+          csi:
+            driver: secrets-store.csi.k8s.io
+            readOnly: true
+            volumeAttributes:
+              secretProviderClass: eds-keyvault
+        - name: utilisateurs
+          configMap:
+            name: clickhouse-users
+  volumeClaimTemplates:
+    - metadata:
+        name: donnees
+      spec:
+        accessModes: [ReadWriteOnce]
+        storageClassName: managed-csi
+        resources:
+          requests:
+            storage: 10Gi

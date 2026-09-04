@@ -1,0 +1,87 @@
+# Les deux conteneurs Blob, vus comme des répertoires par le pipeline. Le
+# montage s'authentifie avec l'identité du kubelet (rôle « Storage Blob Data
+# Contributor » posé par Terraform) : pas de clé dans le cluster. `source`
+# est monté en lecture seule, comme sur le poste : le pipeline n'y écrit
+# jamais.
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: eds-source
+spec:
+  capacity:
+    storage: 1Gi
+  accessModes: [ReadOnlyMany]
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: blob-fuse
+  mountOptions:
+    - -o ro
+    - -o allow_other
+    - --file-cache-timeout-in-seconds=120
+    # Le pilote CSI ajoute par défaut `--cancel-list-on-mount-seconds=10` :
+    # blobfuse2 renvoie alors des répertoires VIDES pendant dix secondes
+    # après le montage, et le pipeline, qui liste les jours de dépôt dès son
+    # démarrage, n'en verrait aucun. On l'annule.
+    - --cancel-list-on-mount-seconds=0
+  csi:
+    driver: blob.csi.azure.com
+    volumeHandle: "__RESOURCE_GROUP__#__STORAGE_ACCOUNT__#source"
+    volumeAttributes:
+      protocol: fuse2
+      resourceGroup: "__RESOURCE_GROUP__"
+      storageAccount: "__STORAGE_ACCOUNT__"
+      containerName: source
+      AzureStorageAuthType: MSI
+      AzureStorageIdentityClientID: "__KUBELET_CLIENT_ID__"
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: source
+  namespace: eds
+spec:
+  accessModes: [ReadOnlyMany]
+  storageClassName: blob-fuse
+  volumeName: eds-source
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: eds-lake
+spec:
+  capacity:
+    storage: 1Gi
+  accessModes: [ReadWriteMany]
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: blob-fuse
+  mountOptions:
+    - -o allow_other
+    # Pas de cache de lecture : ClickHouse lit le blob par l'API juste après
+    # que le pipeline l'a écrit, la vue du pod doit être celle du conteneur.
+    - --file-cache-timeout-in-seconds=0
+    - --cancel-list-on-mount-seconds=0
+  csi:
+    driver: blob.csi.azure.com
+    volumeHandle: "__RESOURCE_GROUP__#__STORAGE_ACCOUNT__#lake"
+    volumeAttributes:
+      protocol: fuse2
+      resourceGroup: "__RESOURCE_GROUP__"
+      storageAccount: "__STORAGE_ACCOUNT__"
+      containerName: lake
+      AzureStorageAuthType: MSI
+      AzureStorageIdentityClientID: "__KUBELET_CLIENT_ID__"
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: lake
+  namespace: eds
+spec:
+  accessModes: [ReadWriteMany]
+  storageClassName: blob-fuse
+  volumeName: eds-lake
+  resources:
+    requests:
+      storage: 1Gi

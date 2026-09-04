@@ -1,0 +1,18 @@
+# Tout ce qui n'est pas secret et que le local lit dans `.env`.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: eds-config
+  namespace: eds
+data:
+  CH_ADMIN_USER: eds_admin
+  CH_HOST: clickhouse
+  CH_PORT: "8123"
+  EDS_LAKE_LECTEUR: blob
+  EDS_SOURCE: /data/source
+  EDS_LAKE: /data/lake
+  MB_URL: http://metabase:3000
+  MB_LOCALE: fr
+  MB_ADMIN_EMAIL: admin@eds-chu.local
+  MB_PILOTAGE_EMAIL: pilotage@eds-chu.local
+  MB_RECHERCHE_EMAIL: recherche@eds-chu.local

@@ -30,7 +30,7 @@ from datetime import date, datetime
 from clickhouse_connect.driver.exceptions import DatabaseError, OperationalError
 
 from eds import journal as mod_journal
-from eds.config import LAKE, exiger, seuils_alerte
+from eds.config import LAKE, exiger, lecteur_lake, seuils_alerte
 from eds.lake import copier_jour, jours_disponibles, lister_jours
 from eds.warehouse import (
     CHARGEURS,
@@ -38,6 +38,7 @@ from eds.warehouse import (
     charger_referentiels,
     client,
     executer_fichier,
+    source_lake,
     valider_jour,
 )
 
@@ -220,24 +221,39 @@ class Pipeline:
         return [j for j in disponibles if j not in deja]
 
     # ── étapes ───────────────────────────────────────────────────────────
+    # Ce que l'exploitant doit faire quand le moteur ne voit pas le lake,
+    # selon la façon dont il le lit.
+    CORRECTIONS_ACCES_LAKE = {
+        "fichier": (
+            "Le montage est probablement rompu (le répertoire lake/ a-t-il été "
+            "supprimé ?). Correction : docker compose restart clickhouse"
+        ),
+        "blob": (
+            "La named collection eds_lake ne joint pas le conteneur `lake`. "
+            "Correction : vérifier lake.xml (chaîne de connexion du compte de "
+            "stockage), puis kubectl -n eds logs clickhouse-0"
+        ),
+    }
+
     def verifier_acces_lake(self) -> None:
         """Vérifie que ClickHouse voit le lake avant de tenter de le lire.
 
-        Le lake est un montage Docker. Supprimer le répertoire côté hôte
-        (`rm -rf lake`) casse le montage : le conteneur reste attaché à
-        l'ancien inode et ne voit plus aucun fichier. L'erreur brute du
-        moteur (FILE_DOESNT_EXIST) n'oriente alors pas vers la vraie cause,
-        d'où ce contrôle explicite et son message d'action.
+        Sur le poste, le lake est un montage Docker : supprimer le répertoire
+        côté hôte (`rm -rf lake`) le casse, et l'erreur brute du moteur
+        (FILE_DOESNT_EXIST) n'oriente pas vers la cause. En cloud, c'est la
+        chaîne de connexion de la named collection qui peut être fausse. Un
+        témoin écrit par le pipeline puis lu par le moteur tranche dans les
+        deux cas, et le message dit quoi faire.
         """
         temoin = LAKE / ".sonde"
         temoin.write_text("sonde", encoding="utf-8")
+        table, _ = source_lake(".sonde", "LineAsString")
         try:
-            self.ch.command("SELECT count() FROM file('lake/.sonde', LineAsString)")
+            self.ch.command(f"SELECT count() FROM {table}")
         except Exception as erreur:
             raise ErreurPipeline(
-                "ClickHouse ne voit pas le lake. Le montage est probablement "
-                "rompu (le répertoire lake/ a-t-il été supprimé ?). "
-                "Correction : docker compose restart clickhouse"
+                "ClickHouse ne voit pas le lake. "
+                + self.CORRECTIONS_ACCES_LAKE[lecteur_lake()]
             ) from erreur
         finally:
             temoin.unlink(missing_ok=True)
