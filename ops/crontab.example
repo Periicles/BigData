@@ -11,6 +11,26 @@
 # de l'entrepôt sont ingérés. Une exécution sur un dépôt déjà traité ne fait
 # que reconstruire silver et gold — sans duplication.
 #
+# CE QUE CRON NE SAIT PAS FAIRE, ET QUI LE FAIT ICI. `cron` déclenche, et
+# rien d'autre : il ignore qu'une exécution précédente court encore, il ne
+# relance pas ce qui a échoué, et il ne prévient personne. La ligne appelle
+# donc `eds.supervision`, qui encadre `eds.run` sans rien changer à son
+# interface (les options sont transmises telles quelles) :
+#
+#   VERROU    deux exécutions ne se recouvrent jamais — un `--tout` lancé à
+#             la main à 03h09 et le cron de 03h10 écriraient sinon bronze en
+#             même temps. Le verrou désigne un PID : celui d'un processus
+#             mort est repris, il ne bloque pas la nuit suivante.
+#   RELANCE   3 tentatives espacées de 10 min sur un échec INATTENDU (code 2 :
+#             ClickHouse arrêté, disque plein) ; aucune sur une erreur métier
+#             (code 1 : jour absent, SQL invalide), qu'une relance à
+#             l'identique ne résoudrait pas.
+#   ALERTE    l'échec dépose logs/ALERTE.txt — code, tentatives, run_id et
+#             marche à suivre — que `eds.run --etat` affiche en tête. Si
+#             EDS_ALERTE_CMD est défini dans .env, il est aussi poussé sur le
+#             canal du site (webhook, courriel, notification). Une nuit
+#             réussie éteint l'alerte : c'est un état, pas un historique.
+#
 # La sortie est redirigée vers un fichier distinct de logs/pipeline.log :
 # ce dernier reçoit le journal structuré, celui-ci les erreurs système
 # (Python absent, disque plein, conteneur arrêté).
@@ -18,4 +38,4 @@
 SHELL=/bin/bash
 EDS_HOME=/Users/periicles/Dev/BigData
 
-10 3 * * *  cd $EDS_HOME && .venv/bin/python -m eds.run >> logs/cron.log 2>&1
+10 3 * * *  cd $EDS_HOME && .venv/bin/python -m eds.supervision >> logs/cron.log 2>&1

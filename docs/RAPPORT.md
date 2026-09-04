@@ -1344,6 +1344,7 @@ propres à Metabase, distinctes de celles de l'entrepôt ci-dessus :
 | **Haute** | Soumettre la stratégie de pseudonymisation au DPO, en particulier la conservation du triplet (année, sexe, région) en base pilotage. La région a désormais un usage nommé — la vue d'origine géographique par service — qui fonde sa conservation au titre de la minimisation ; c'est cet usage, et lui seul, que le DPO a à valider.                                                               |
 | **Haute** | Remplacer la base applicative H2 de Metabase par PostgreSQL avant toute mise en service — sauvegarde à chaud, accès concurrent, réplication : ce que H2 ne couvre pas (§ 8.1).                     |
 | Moyenne   | Brancher Metabase sur le SSO / annuaire du CHU plutôt que sur des comptes locaux, et mettre en place un journal des consultations de tableau de bord — qui a vu quel indicateur, et quand — exigible pour un audit d'accès à des données de santé. |
+| Moyenne   | Brancher `EDS_ALERTE_CMD` sur la supervision déjà en place au CHU. Le mécanisme d'alerte existe et est testé (§ 9) ; le canal, lui, est une décision d'exploitation qui n'a pas à vivre dans le dépôt. À traiter avec la règle de détection d'un dépôt qui cesse — la limite qui subsiste. |
 | Moyenne   | Formaliser la gestion du sel : conservation en coffre, procédure de rotation, et conséquence assumée — sa perte rend tout rapprochement avec la source définitivement impossible.                  |
 | Moyenne   | Passer silver et gold en construction incrémentale si le volume dépasse quelques dizaines de millions de lignes.                                                                                   |
 | Moyenne   | Faire confirmer par le CHU que `discharge_mode` vide signifie toujours « séjour en cours ». C'est le cas sur ce dépôt — aucun séjour clos n'en est privé — mais la normalisation en `'inconnu'` masquerait une anomalie de saisie si la règle changeait à l'amont. |
@@ -1360,7 +1361,7 @@ propres à Metabase, distinctes de celles de l'entrepôt ci-dessus :
 ## 9. Ce qui déclenche le pipeline
 
 ```
-10 3 * * *  cd $EDS_HOME && .venv/bin/python -m eds.run >> logs/cron.log 2>&1
+10 3 * * *  cd $EDS_HOME && .venv/bin/python -m eds.supervision >> logs/cron.log 2>&1
 ```
 
 **03h10, et pas un autre horaire.** Le choix est conventionnel : après une
@@ -1387,16 +1388,40 @@ Python dans `eds/run.py` — le graphe de dépendances
 existe, mais à l'intérieur d'un seul processus, pas entre plusieurs tâches
 cron. Ajouter un ordonnanceur ne changerait aucune de ces dépendances ; il
 ajouterait une base de métadonnées et un serveur web à faire tourner pour
-planifier un appel quotidien. C'est un choix à revoir le jour où plusieurs
-pipelines indépendants doivent se coordonner — pas avant.
+planifier un appel quotidien.
 
-**Ce que `cron` ne garantit pas, et ce qu'on met en face.**
+Le coût a été mesuré plutôt que supposé : résolue contre l'environnement du
+projet, l'installation de `dagster` et de son interface web tire **64 paquets
+transitifs** — grpcio, protobuf, pydantic, SQLAlchemy, alembic, uvicorn. Le
+pipeline en compte deux (§ 2.3), et ce compte est un argument, pas un hasard.
+S'y ajouterait un démon à maintenir en vie en permanence, dont la mort
+n'empêcherait rien de se déclencher — silencieusement. C'est un choix à
+revoir le jour où plusieurs pipelines indépendants doivent se coordonner —
+pas avant. Ce que l'ordonnanceur aurait apporté d'utile ici — verrou, relance,
+alerte — tient dans `eds/supervision.py`, 229 lignes sans dépendance,
+couvertes par 24 tests hors ligne : 18 sur le superviseur lui-même, un faux
+pipeline injecté à la place d'`eds.run`, et 6 sur ses réglages, refusés à la
+frontière comme les seuils (§ 4.1).
 
-| `cron` ne fait pas | Ce qui compense |
+**Ce que `cron` ne garantit pas, et ce qu'on met en face.** `cron` déclenche,
+et rien d'autre. La ligne de crontab n'appelle donc pas `eds.run` directement
+mais `eds.supervision`, qui l'encadre sans rien changer à son interface — les
+options sont transmises telles quelles, et un lancement manuel de `eds.run`
+reste possible et inchangé.
+
+| `cron` ne fait pas | Ce que `eds.supervision` met en face |
 | --- | --- |
-| Reprise automatique après un échec | Rien ne relance seul une exécution en échec — c'est assumé (§ 13) : `cron` retente le lendemain à 03h10, jamais dans l'heure. En attendant, l'échec est explicite (code de sortie non nul) et entièrement tracé (§ 11), pour qu'un humain corrige et relance |
-| Alerte en cas d'échec | Aucune n'est câblée aujourd'hui : la sortie `logs/cron.log` et `ops.executions` sont **passives**, il faut aller les lire. C'est une limite assumée à ce stade (recommandation § 8.2 — brancher un outil de supervision reste à faire) |
+| Empêcher deux exécutions de se recouvrir | Un **verrou** (`logs/.verrou`), créé en `O_EXCL` — donc atomique : deux exécutions lancées à la même seconde ne peuvent pas conclure toutes les deux qu'elles l'ont pris. Le cas réel n'est pas théorique : un `--tout` lancé à la main à 03h09 et le cron de 03h10 écriraient bronze en même temps. Le verrou désigne un PID, et celui d'un processus mort est **repris** : une machine redémarrée en pleine nuit ne bloque pas les suivantes |
+| Relancer après un échec | **3 tentatives espacées de 10 min** sur un échec *inattendu* (code 2 : ClickHouse arrêté, disque plein — une cause qui peut disparaître d'elle-même). **Aucune** sur une erreur *métier* (code 1 : jour absent, SQL invalide) : la même classification qu'au § 10, appliquée un cran plus haut. Les deux bornes sont des paramètres d'exploitation (`EDS_RELANCE_TENTATIVES`, `EDS_RELANCE_ATTENTE_S`), pas des constantes |
+| Prévenir | L'échec dépose `logs/ALERTE.txt` — code de sortie, tentatives, `run_id` de l'exécution fautive, marche à suivre — que `eds.run --etat` affiche **en tête, avant même de se connecter à ClickHouse** : l'alerte se voit donc même quand c'est le moteur qui est tombé. Une nuit réussie l'efface : c'est un état, pas un historique, le journal gardant la trace de l'incident. Si `EDS_ALERTE_CMD` est défini dans `.env`, le résumé est en outre poussé sur le canal du site — webhook, courriel, notification. Son échec ne devient jamais celui du pipeline, même règle que le journal ClickHouse (§ 11) |
 | Dépendance entre tâches | Sans objet ici : une seule ligne crontab, une seule commande. Le graphe interne (`Pipeline.executer`) reste dans le processus Python, pas dans `cron` |
+
+**Le canal d'alerte est délibérément hors du dépôt.** Il n'est pas une
+propriété du pipeline mais une décision d'exploitation : le CHU a déjà une
+supervision, et c'est elle qu'il faut atteindre. `EDS_ALERTE_CMD` reçoit le
+résumé sur son entrée standard, ce qui laisse le choix du moyen sans qu'aucun
+outil n'entre dans `requirements.txt` — et rend la chaîne démontrable hors
+ligne, l'alerte fichier ne dépendant d'aucun réseau.
 
 **Le mode par défaut est incrémental, et c'est un choix.** `eds.run` sans
 option calcule `jours_disponibles() − jours_deja_ingeres()` : seuls les jours
@@ -1413,9 +1438,12 @@ calendrier attendu. Si le CHU ne dépose rien une nuit, ce jour n'existe
 simplement pas dans la liste : l'exécution suivante n'échoue pas, elle
 **n'a rien à faire** pour ce jour, et se termine normalement. Le jour sera
 repris automatiquement dès qu'il apparaîtra dans le dépôt, sans action
-manuelle — mais rien n'alerte aujourd'hui si le CHU cesse durablement de
-déposer : c'est la même limite que la ligne « pas d'alerte » ci-dessus,
-appliquée à l'absence de dépôt plutôt qu'à l'échec d'un traitement.
+manuelle — mais **rien n'alerte si le CHU cesse durablement de déposer**.
+C'est la limite qui subsiste après l'ajout du superviseur : celui-ci prévient
+quand une exécution échoue, pas quand elle réussit à ne rien faire. Détecter
+un silence prolongé suppose un calendrier de dépôt attendu, que le CHU n'a
+pas fourni (le dépôt est irrégulier par conception — § 11) ; la règle reste
+donc à établir avec lui avant d'être codée.
 
 ## 10. Ce qui se passe quand ça échoue
 
@@ -1506,6 +1534,17 @@ scénario où une source aurait échoué après une autre (§ 9,
 présentes, pas seulement `sejours`). Une simple relance de `eds.run` retrouve
 les 321 lignes disparues, sans argument spécial ni intervention : le jour est
 redétecté comme non entièrement ingéré, et rechargé.
+
+**Deux étages de reprise, et ils ne traitent pas le même incident.** Celui
+décrit ci-dessus est *interne* à l'exécution : `avec_reprises` retente une
+opération dont la panne est transitoire — 3 tentatives, 2 s puis 4 s — sans
+que le pipeline s'arrête. Il ne peut rien, en revanche, contre ce qui fait
+échouer l'exécution entière : un ClickHouse qui ne répond plus au démarrage,
+un disque plein. C'est là qu'intervient le second étage, *externe* : le
+superviseur du § 9 relance l'exécution complète, 3 fois, à 10 min
+d'intervalle. La classification est la même aux deux étages — on ne retente
+que ce qu'une relance peut résoudre — mais l'unité diffère : une requête
+d'un côté, la nuit entière de l'autre.
 
 ## 11. La journalisation
 
@@ -1728,13 +1767,14 @@ sont donc gardés.
 
 | Besoin | Commande | Effet |
 | --- | --- | --- |
-| Lancement quotidien (celui du cron) | `.venv/bin/python -m eds.run` | incrémental : ingère les seuls jours absents, reconstruit silver et gold, réapplique les droits |
+| Lancement quotidien (celui du cron) | `.venv/bin/python -m eds.supervision` | encadre `eds.run` : verrou, relance bornée, alerte (§ 9). Les options sont transmises telles quelles |
+| Lancement manuel | `.venv/bin/python -m eds.run` | incrémental : ingère les seuls jours absents, reconstruit silver et gold, réapplique les droits |
 | Rejeu d'un jour précis | `.venv/bin/python -m eds.run --jour 2026-08-27` | réécrit sa partition bronze (`DROP PARTITION` puis rechargement) ; sans effet sur les autres jours |
 | Rechargement complet | `.venv/bin/python -m eds.run --tout` | relit les 28 jours ; nécessaire après un changement de jeu de données source, jamais après un simple incident (§ 10) |
 | État de l'entrepôt, sans rien modifier | `.venv/bin/python -m eds.run --etat` | jours ingérés/en attente, volumes par couche, cinq dernières étapes |
 | Provisionnement de la restitution | `.venv/bin/python -m eds.restitution` | (re)crée connexions, comptes, droits et tableaux de bord Metabase — idempotent, ~6 s au premier passage, ~1,2 s ensuite |
 | État de Metabase, sans rien modifier | `.venv/bin/python -m eds.restitution --etat` | connexions et tableaux de bord déjà provisionnés |
-| Tests unitaires, hors ligne | `.venv/bin/python -m pytest` | 102 tests sur les fonctions pures — pseudonymisation, découpage SQL, résolution des référentiels, seuils. **Ne demandent ni Docker ni entrepôt**, et s'exécutent en moins d'une seconde |
+| Tests unitaires, hors ligne | `.venv/bin/python -m pytest` | 126 tests sur les fonctions pures — pseudonymisation, découpage SQL, résolution des référentiels, seuils — et sur le superviseur (verrou, relance, alerte), qui écrit dans un répertoire jetable. **Ne demandent ni Docker ni entrepôt**, et s'exécutent en moins d'une seconde |
 | Contrôle des 428 propriétés | `.venv/bin/python -m tests.verifier` | rejoue les cinq sections de vérification (dont `conformite`, § 6) |
 | Démonstrations rejouables | `.venv/bin/python -m tests.demontrer` | dont `reprise` (§ 10) et `restitution` (cloisonnement vu depuis Metabase) |
 
@@ -2220,7 +2260,7 @@ identiquement le fait et son indicateur ne serait détectée que par la
 confrontation à la référence — laquelle ne couvre pas tous les chiffres.
 
 **Le nombre de contrôles n'est pas une garantie.** 428 propriétés vérifiées et
-102 tests unitaires ne disent rien de ce qui n'est pas mesuré. Deux des défauts
+126 tests unitaires ne disent rien de ce qui n'est pas mesuré. Deux des défauts
 racontés au chapitre suivant sont passés à travers tous ces contrôles : ils
 n'ont été trouvés qu'en fabriquant une donnée qui n'existait pas, et en lisant
 le document produit.

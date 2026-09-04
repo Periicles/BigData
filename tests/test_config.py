@@ -158,3 +158,42 @@ def test_langue_hors_liste_est_refusee(env_vierge, monkeypatch, refusee):
     monkeypatch.setenv("MB_LOCALE", refusee)
     with pytest.raises(RuntimeError, match="Langue Metabase invalide"):
         config.langue_metabase()
+
+
+# ── Bornes de relance du superviseur ─────────────────────────────────────
+def test_bornes_de_relance_par_defaut(env_vierge):
+    """Trois tentatives à dix minutes : une panne de moteur passagère est
+    absorbée, une panne durable ne monopolise pas la nuit."""
+    assert config.bornes_relance() == (3, 600)
+
+
+def test_les_bornes_de_relance_se_surchargent_par_l_environnement(env_vierge, monkeypatch):
+    monkeypatch.setenv("EDS_RELANCE_TENTATIVES", "5")
+    monkeypatch.setenv("EDS_RELANCE_ATTENTE_S", "30")
+    assert config.bornes_relance() == (5, 30)
+
+
+def test_une_borne_de_relance_non_numerique_est_refusee(env_vierge, monkeypatch):
+    """Même règle que les seuils : une saisie fautive est refusée à la
+    frontière, pas absorbée en silence."""
+    monkeypatch.setenv("EDS_RELANCE_TENTATIVES", "trois")
+    with pytest.raises(RuntimeError) as erreur:
+        config.bornes_relance()
+    assert "EDS_RELANCE_TENTATIVES" in str(erreur.value)
+
+
+def test_une_borne_de_relance_nulle_est_refusee(env_vierge, monkeypatch):
+    """Zéro tentative ne veut rien dire : le pipeline ne serait jamais lancé."""
+    monkeypatch.setenv("EDS_RELANCE_TENTATIVES", "0")
+    with pytest.raises(RuntimeError):
+        config.bornes_relance()
+
+
+def test_aucune_commande_d_alerte_par_defaut(env_vierge):
+    """Le canal est une décision d'exploitation : le dépôt n'en impose aucun."""
+    assert config.commande_alerte() == ""
+
+
+def test_la_commande_d_alerte_vient_de_l_environnement(env_vierge, monkeypatch):
+    monkeypatch.setenv("EDS_ALERTE_CMD", "  curl -sS --data-binary @- https://exemple  ")
+    assert config.commande_alerte() == "curl -sS --data-binary @- https://exemple"

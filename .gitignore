@@ -259,3 +259,9 @@ docs/imgs/.DS_Store
 # de travail, pas au rendu : le livrable est le rapport, pas sa chaîne de
 # fabrication. Il reste donc sur disque, hors du dépôt.
 docs/en_pdf.py
+
+# État d'exécution du superviseur (ops/crontab.example) : le verrou désigne un
+# PID, l'alerte l'échec de la dernière nuit. Deux états de MACHINE, vrais nulle
+# part ailleurs que sur celle qui exécute le pipeline.
+logs/.verrou
+logs/ALERTE.txt

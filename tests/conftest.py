@@ -6,6 +6,12 @@ autre sans toucher ni au disque partagé ni à ClickHouse : pseudonymisation,
 généralisation des dates, liste blanche des colonnes, découpage du SQL,
 résolution des référentiels, validation des entrées interpolées.
 
+Une exception assumée : `test_supervision.py` écrit sur le disque, puisque le
+verrou et l'alerte SONT des fichiers. Il reste dans cette suite parce qu'il
+n'en écrit aucun ailleurs que dans un répertoire jetable, n'ouvre aucune
+connexion, et injecte un faux pipeline à la place d'`eds.run` : hors ligne et
+instantané, comme le reste.
+
 Ils ne remplacent donc PAS `tests.verifier` ni `tests.demontrer`, qui
 s'exécutent contre un entrepôt vivant et prouvent des propriétés qu'aucun
 test unitaire ne peut atteindre : l'équation de conservation sur les vraies

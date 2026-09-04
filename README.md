@@ -286,6 +286,28 @@ sont ingérés ; les anciens ne sont ni relus ni dupliqués.
 crontab ops/crontab.example     # exécution quotidienne à 03h10
 ```
 
+`cron` déclenche, et rien d'autre : il ignore qu'une exécution précédente
+court encore, il ne relance pas ce qui a échoué, et il ne prévient personne.
+La ligne de crontab appelle donc `eds.supervision`, qui encadre `eds.run`
+sans rien changer à son interface — les options sont transmises telles
+quelles.
+
+| `cron` ne fait pas | Ce que le superviseur met en face |
+|---|---|
+| Empêcher deux exécutions de se recouvrir | Un **verrou** qui désigne un PID. Un `--tout` lancé à la main à 03h09 et le cron de 03h10 écriraient sinon bronze en même temps. Le verrou d'un processus mort est repris : une machine qui redémarre en pleine nuit ne bloque pas la suivante |
+| Relancer après un échec | **3 tentatives espacées de 10 min** sur un échec *inattendu* (code 2 : ClickHouse arrêté, disque plein). **Aucune** sur une erreur *métier* (code 1 : jour absent, SQL invalide) — la relancer à l'identique ne ferait que perdre du temps et bruiter le journal |
+| Prévenir | L'échec dépose `logs/ALERTE.txt` — code de sortie, tentatives, `run_id`, marche à suivre — que `eds.run --etat` affiche **en tête**, avant même de se connecter à ClickHouse. Une nuit réussie l'éteint : c'est un état, pas un historique |
+
+Le canal reste hors du dépôt, parce qu'il est une décision d'exploitation :
+`EDS_ALERTE_CMD` dans `.env` reçoit le résumé sur son entrée standard —
+webhook, courriel ou notification de poste. Son échec ne devient jamais celui
+du pipeline, même règle que le journal ClickHouse.
+
+```bash
+.venv/bin/python -m eds.supervision              # ce que lance le cron
+.venv/bin/python -m eds.supervision --tout       # les options vont à eds.run
+```
+
 ---
 
 ---
@@ -302,7 +324,7 @@ réelle n'exerce.
 
 ```bash
 .venv/bin/pip install -r requirements-dev.txt
-.venv/bin/python -m pytest              # 102 tests unitaires, 0,1 s, hors ligne
+.venv/bin/python -m pytest              # 126 tests unitaires, 0,1 s, hors ligne
 ```
 
 ```bash
@@ -457,6 +479,7 @@ eds/                     le pipeline
   warehouse.py           client ClickHouse, exécution SQL, chargement bronze
   journal.py             journalisation JSON + console
   run.py                 orchestrateur — point d'entrée
+  supervision.py         verrou, relance bornée et alerte — ce qu'appelle le cron
   restitution.py         provisionne Metabase par son API
 
 sql/                     toute la transformation, versionnée
@@ -474,12 +497,13 @@ sql/                     toute la transformation, versionnée
 tests/
   verifier.py            459 contrôles contre l'entrepôt vivant
   demontrer.py           cinq démonstrations, par injection puis remise en état
-  test_lake.py           102 tests unitaires — fonctions pures, hors ligne
-  test_warehouse.py      (pytest, sans Docker ni ClickHouse)
+  test_lake.py           126 tests unitaires — hors ligne, sans Docker
+  test_warehouse.py      (pytest, en une fraction de seconde)
   test_config.py
+  test_supervision.py    verrou, relance et alerte, faux pipeline injecté
 
 exploration/             profilage initial des sources (DuckDB)
-ops/crontab.example      planification
+ops/crontab.example      planification — appelle eds.supervision
 docs/                    le rapport, son rendu PDF et ses captures
 ```
 

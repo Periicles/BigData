@@ -160,6 +160,53 @@ def seuils_alerte() -> dict[str, str]:
     return seuils
 
 
+# ── Supervision du pipeline ──────────────────────────────────────────────
+#
+# Ces réglages ne concernent que `eds.supervision`, le superviseur qu'appelle
+# la ligne de crontab. Ils décrivent une CONDUITE D'EXPLOITATION — combien de
+# fois relancer, à quel rythme, où prévenir — et n'ont aucun effet sur la
+# donnée produite : c'est ce qui les distingue des seuils d'alerte, et ce qui
+# justifie qu'ils vivent ici plutôt que dans le code du superviseur.
+TENTATIVES_RELANCE_DEFAUT = 3
+ATTENTE_RELANCE_DEFAUT_S = 600
+
+
+def bornes_relance() -> tuple[int, int]:
+    """Nombre de tentatives et attente entre deux, surchargeables.
+
+    C'est cette surcharge qui rend la relance testable en une seconde, et
+    ajustable en exploitation sans toucher au code.
+    """
+    _charger_env()
+    bornes = []
+    for nom, defaut in (
+        ("EDS_RELANCE_TENTATIVES", TENTATIVES_RELANCE_DEFAUT),
+        ("EDS_RELANCE_ATTENTE_S", ATTENTE_RELANCE_DEFAUT_S),
+    ):
+        valeur = os.environ.get(nom, "").strip()
+        if not valeur:
+            bornes.append(defaut)
+            continue
+        if not valeur.isdigit() or int(valeur) < 1:
+            raise RuntimeError(
+                f"Borne de relance invalide : {nom}={valeur!r} "
+                "(un entier supérieur à zéro est attendu)."
+            )
+        bornes.append(int(valeur))
+    return bornes[0], bornes[1]
+
+
+def commande_alerte() -> str:
+    """Commande à qui pousser une alerte, ou chaîne vide si le site n'en veut pas.
+
+    Le canal — webhook, courriel, notification — est une décision
+    d'exploitation : il n'a pas à vivre dans le dépôt, et rien n'est imposé
+    par défaut.
+    """
+    _charger_env()
+    return os.environ.get("EDS_ALERTE_CMD", "").strip()
+
+
 def langue_metabase() -> str:
     """Langue d'affichage de Metabase, surchargeable par `MB_LOCALE`."""
     _charger_env()

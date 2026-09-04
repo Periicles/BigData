@@ -364,6 +364,12 @@ class Pipeline:
 
 def afficher_etat() -> int:
     """Affiche l'état de l'entrepôt sans rien modifier."""
+    from eds.supervision import bandeau_alerte
+
+    # En tête, avant toute connexion : un échec de la nuit doit se voir même
+    # si c'est ClickHouse lui-même qui est tombé.
+    print(bandeau_alerte(), end="")
+
     ch = client()
     disponibles = jours_disponibles()
     ingeres = {
