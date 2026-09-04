@@ -17,6 +17,11 @@ spec:
     - -o ro
     - -o allow_other
     - --file-cache-timeout-in-seconds=120
+    # Le pilote CSI ajoute par défaut `--cancel-list-on-mount-seconds=10` :
+    # blobfuse2 renvoie alors des répertoires VIDES pendant dix secondes
+    # après le montage, et le pipeline, qui liste les jours de dépôt dès son
+    # démarrage, n'en verrait aucun. On l'annule.
+    - --cancel-list-on-mount-seconds=0
   csi:
     driver: blob.csi.azure.com
     volumeHandle: "__RESOURCE_GROUP__#__STORAGE_ACCOUNT__#source"
@@ -56,6 +61,7 @@ spec:
     # Pas de cache de lecture : ClickHouse lit le blob par l'API juste après
     # que le pipeline l'a écrit, la vue du pod doit être celle du conteneur.
     - --file-cache-timeout-in-seconds=0
+    - --cancel-list-on-mount-seconds=0
   csi:
     driver: blob.csi.azure.com
     volumeHandle: "__RESOURCE_GROUP__#__STORAGE_ACCOUNT__#lake"
