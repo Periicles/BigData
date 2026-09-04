@@ -277,3 +277,6 @@ infra/terraform/terraform.tfvars
 infra/terraform/*.auto.tfvars
 infra/k8s/rendu/
 infra/k8s/.image-tag
+
+# Notes de travail (spec, plan) : restent sur le poste, hors du livrable.
+docs/superpowers/
