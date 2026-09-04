@@ -197,3 +197,67 @@ def test_aucune_commande_d_alerte_par_defaut(env_vierge):
 def test_la_commande_d_alerte_vient_de_l_environnement(env_vierge, monkeypatch):
     monkeypatch.setenv("EDS_ALERTE_CMD", "  curl -sS --data-binary @- https://exemple  ")
     assert config.commande_alerte() == "curl -sS --data-binary @- https://exemple"
+
+
+# ── Chemins surchargeables ───────────────────────────────────────────────
+def test_un_chemin_absent_de_l_environnement_garde_sa_valeur_par_defaut(env_vierge):
+    from pathlib import Path
+
+    defaut = Path("/defaut/lake")
+    assert config.chemin_depuis_env("EDS_LAKE", defaut) == defaut
+
+
+def test_un_chemin_se_surcharge_par_l_environnement(env_vierge, monkeypatch):
+    from pathlib import Path
+
+    monkeypatch.setenv("EDS_LAKE", "/data/lake")
+    assert config.chemin_depuis_env("EDS_LAKE", Path("/defaut")) == Path("/data/lake")
+
+
+def test_un_chemin_vide_est_traite_comme_absent(env_vierge, monkeypatch):
+    from pathlib import Path
+
+    monkeypatch.setenv("EDS_SOURCE", "   ")
+    assert config.chemin_depuis_env("EDS_SOURCE", Path("/defaut")) == Path("/defaut")
+
+
+# ── Lecteur du lake ──────────────────────────────────────────────────────
+def test_lecteur_par_defaut_est_le_fichier(env_vierge):
+    assert config.lecteur_lake() == "fichier"
+
+
+@pytest.mark.parametrize(
+    "valeur, attendu", [("blob", "blob"), (" Blob ", "blob"), ("FICHIER", "fichier")]
+)
+def test_lecteur_se_surcharge_et_se_normalise(env_vierge, monkeypatch, valeur, attendu):
+    monkeypatch.setenv("EDS_LAKE_LECTEUR", valeur)
+    assert config.lecteur_lake() == attendu
+
+
+@pytest.mark.parametrize("refuse", ["s3", "azure", "file"])
+def test_lecteur_hors_liste_est_refuse(env_vierge, monkeypatch, refuse):
+    monkeypatch.setenv("EDS_LAKE_LECTEUR", refuse)
+    with pytest.raises(RuntimeError, match="EDS_LAKE_LECTEUR"):
+        config.lecteur_lake()
+
+
+# ── URL de Metabase ──────────────────────────────────────────────────────
+def test_url_metabase_par_defaut_est_locale(env_vierge):
+    assert config.url_metabase() == "http://localhost:3000"
+
+
+def test_url_metabase_se_surcharge_sans_barre_finale(env_vierge, monkeypatch):
+    monkeypatch.setenv("MB_URL", "http://metabase:3000/")
+    assert config.url_metabase() == "http://metabase:3000"
+
+
+def test_url_metabase_vide_retombe_sur_le_defaut(env_vierge, monkeypatch):
+    monkeypatch.setenv("MB_URL", "")
+    assert config.url_metabase() == "http://localhost:3000"
+
+
+@pytest.mark.parametrize("refusee", ["metabase:3000", "ftp://x"])
+def test_url_metabase_sans_schema_http_est_refusee(env_vierge, monkeypatch, refusee):
+    monkeypatch.setenv("MB_URL", refusee)
+    with pytest.raises(RuntimeError, match="MB_URL"):
+        config.url_metabase()

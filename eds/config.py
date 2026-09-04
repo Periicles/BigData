@@ -12,11 +12,24 @@ from pathlib import Path
 
 RACINE = Path(__file__).resolve().parent.parent
 
+
+def chemin_depuis_env(nom: str, defaut: Path) -> Path:
+    """Chemin lu dans l'environnement du processus, ou sa valeur par défaut.
+
+    Lu à l'import du module, donc depuis l'environnement RÉEL — pas depuis
+    `.env`, qui n'est chargé qu'à la première demande de secret. C'est
+    voulu : ces chemins sont posés par la machine qui exécute (un montage
+    dans un conteneur), pas par le fichier de réglages du poste.
+    """
+    valeur = os.environ.get(nom, "").strip()
+    return Path(valeur) if valeur else defaut
+
+
 # Dépôt du CHU : accès en lecture seule, jamais écrit par le pipeline.
-SOURCE = RACINE / "eds-chu-sujet" / "source-filestorage"
+SOURCE = chemin_depuis_env("EDS_SOURCE", RACINE / "eds-chu-sujet" / "source-filestorage")
 
 # Zone de travail : copie pseudonymisée des dépôts.
-LAKE = RACINE / "lake"
+LAKE = chemin_depuis_env("EDS_LAKE", RACINE / "lake")
 
 # ── Ce que le lake est autorisé à contenir ───────────────────────────────
 #
@@ -112,6 +125,21 @@ LANGUE_METABASE_DEFAUT = "fr"
 # refusée par son API avec un message peu clair : autant refuser ici, à la
 # frontière, comme pour les seuils.
 LANGUES_METABASE = ("fr", "en")
+
+# ── Où ClickHouse lit le lake ───────────────────────────────────────────
+#
+# `fichier` : le lake est un répertoire monté dans `user_files`, lu par
+# `file()` — le mode du poste et de docker-compose. `blob` : le lake est un
+# conteneur Azure Blob, lu par `azureBlobStorage()` à travers la named
+# collection `eds_lake` de la configuration du serveur. Le pipeline, lui,
+# voit toujours un système de fichiers ; seule la lecture par le moteur
+# change.
+LECTEUR_LAKE_DEFAUT = "fichier"
+LECTEURS_LAKE = ("fichier", "blob")
+
+# Adresse de Metabase vue par `eds.restitution` : le port publié par
+# docker-compose sur le poste, le nom du Service dans un cluster.
+URL_METABASE_DEFAUT = "http://localhost:3000"
 
 _NOMBRE = re.compile(r"-?\d+(?:\.\d+)?")
 
@@ -217,3 +245,26 @@ def langue_metabase() -> str:
             f"(attendu : {' ou '.join(LANGUES_METABASE)})."
         )
     return valeur
+
+
+def lecteur_lake() -> str:
+    """Lecteur du lake côté ClickHouse, surchargeable par `EDS_LAKE_LECTEUR`."""
+    _charger_env()
+    valeur = os.environ.get("EDS_LAKE_LECTEUR", "").strip().lower() or LECTEUR_LAKE_DEFAUT
+    if valeur not in LECTEURS_LAKE:
+        raise RuntimeError(
+            f"Lecteur du lake invalide : EDS_LAKE_LECTEUR={valeur!r} "
+            f"(attendu : {' ou '.join(LECTEURS_LAKE)})."
+        )
+    return valeur
+
+
+def url_metabase() -> str:
+    """URL de Metabase, surchargeable par `MB_URL`, sans barre finale."""
+    _charger_env()
+    valeur = os.environ.get("MB_URL", "").strip() or URL_METABASE_DEFAUT
+    if not valeur.startswith(("http://", "https://")):
+        raise RuntimeError(
+            f"URL Metabase invalide : MB_URL={valeur!r} (http:// ou https:// attendu)."
+        )
+    return valeur.rstrip("/")
