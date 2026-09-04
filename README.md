@@ -329,6 +329,12 @@ ne bifurque dans le code : chaque différence avec le poste est une variable
 d'environnement, dont l'absence conserve le comportement local — `EDS_SOURCE`,
 `EDS_LAKE`, `EDS_LAKE_LECTEUR=blob`, `CH_HOST`, `MB_URL`.
 
+Prérequis, en plus de ceux du poste : `az` (connecté à un abonnement où
+l'on est propriétaire), Terraform 1.10 ou plus, `kubectl`. Ni Docker ni
+`.env` ne sont nécessaires : l'image est construite dans Azure, les secrets
+générés par Terraform. Un quota de 2 vCPU en famille B suffit ; la taille du
+nœud et la région se changent dans `terraform.tfvars`.
+
 ```bash
 cp infra/terraform/terraform.tfvars.example infra/terraform/terraform.tfvars   # abonnement, IP
 az login
@@ -348,6 +354,17 @@ ops/cloud.sh detruire      # tout, y compris l'IP publique
 | `.env` | Key Vault, projeté par l'addon CSI en Secret `eds-secrets` | aucun secret dans un manifeste ; tous générés par Terraform, jamais lus par un humain |
 | `cron` + `eds.supervision` | CronJob `eds-nuit`, `concurrencyPolicy: Forbid`, `backoffLimit: 3` | verrou et relance sont natifs à l'orchestrateur |
 | `localhost:3000` | Service LoadBalancer restreint à `ip_autorisee` | ClickHouse, lui, n'est jamais exposé : ClusterIP seulement |
+
+Si une étape échoue, la relancer suffit : chaque verbe est idempotent.
+
+| Symptôme | Cause | Correction |
+| --- | --- | --- |
+| `403` sur un secret Key Vault pendant `deployer` | le rôle RBAC n'est pas encore effectif | relancer `ops/cloud.sh deployer` ; Terraform reprend où il en était |
+| `aucune image construite` | clone frais, ou `detruire` passé par là | `ops/cloud.sh deployer` (ou `image` si l'infrastructure existe déjà) |
+| pod en `ImagePullBackOff` | manifestes rendus sur un autre tag que l'image | `ops/cloud.sh image`, puis `kubectl apply -k infra/k8s/rendu` |
+| pod en `Pending`, `Insufficient cpu` | nœud trop petit pour les requêtes des pods | `taille_noeud` dans `terraform.tfvars`, puis `deployer` |
+| `ClickHouse ne voit pas le lake` | named collection ou clé du stockage en défaut | `kubectl -n eds logs clickhouse-0`, puis `deployer` pour régénérer `lake.xml` |
+| Metabase injoignable depuis le navigateur | `ip_autorisee` n'est plus votre adresse | corriger `terraform.tfvars`, puis `deployer` |
 
 Coût, cluster allumé : environ 2,8 €/jour (nœud B2ms, équilibreur, registre,
 disques). Une démonstration de trois heures coûte moins d'un euro ;
