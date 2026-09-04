@@ -264,3 +264,15 @@ docs/en_pdf.py
 # part ailleurs que sur celle qui exécute le pipeline.
 logs/.verrou
 logs/ALERTE.txt
+
+# ── Déploiement cloud ─────────────────────────────────────────────────
+# L'état Terraform contient les valeurs des secrets générés ; les tfvars
+# portent l'abonnement et l'IP du poste ; les manifestes rendus portent les
+# identifiants du déploiement. Aucun des trois n'a sa place dans git.
+infra/terraform/.terraform/
+infra/terraform/*.tfstate
+infra/terraform/*.tfstate.*
+infra/terraform/*.tfplan
+infra/terraform/terraform.tfvars
+infra/terraform/*.auto.tfvars
+infra/k8s/rendu/
