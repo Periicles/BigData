@@ -16,6 +16,25 @@ spec:
     - name: natif
       port: 9000
 ---
+# L'image crée le compte d'administration avec `access_management`, mais
+# pas `named_collection_control` : sans ce droit, `azureBlobStorage(eds_lake)`
+# est refusé au pipeline. Ce fragment users.d le lui donne — il est fusionné
+# avec la définition posée par l'image au démarrage.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: clickhouse-users
+  namespace: eds
+data:
+  named_collection_control.xml: |
+    <clickhouse>
+      <users>
+        <eds_admin>
+          <named_collection_control>1</named_collection_control>
+        </eds_admin>
+      </users>
+    </clickhouse>
+---
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
@@ -70,6 +89,10 @@ spec:
             - name: secrets
               mountPath: /mnt/secrets
               readOnly: true
+            - name: utilisateurs
+              mountPath: /etc/clickhouse-server/users.d/named_collection_control.xml
+              subPath: named_collection_control.xml
+              readOnly: true
           readinessProbe:
             exec:
               command:
@@ -92,6 +115,9 @@ spec:
             readOnly: true
             volumeAttributes:
               secretProviderClass: eds-keyvault
+        - name: utilisateurs
+          configMap:
+            name: clickhouse-users
   volumeClaimTemplates:
     - metadata:
         name: donnees
