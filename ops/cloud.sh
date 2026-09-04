@@ -66,7 +66,8 @@ deployer() {
   local tag; tag=$(tag_image)
   # Construite dans Azure, pour l'architecture des nœuds : ni Docker local,
   # ni croisement ARM/AMD64 depuis un Mac.
-  az acr build --registry "$(sortie_tf acr_name)" --image "eds-pipeline:$tag" \
+  az acr build --resource-group "$(sortie_tf resource_group_name)" \
+    --registry "$(sortie_tf acr_name)" --image "eds-pipeline:$tag" \
     --platform linux/amd64 --file "$RACINE/infra/Dockerfile" "$RACINE"
   az aks get-credentials --resource-group "$(sortie_tf resource_group_name)" \
     --name "$(sortie_tf aks_name)" --overwrite-existing
