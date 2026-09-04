@@ -63,7 +63,7 @@ spec:
             - name: JAVA_OPTS
               value: -Xmx1g
           resources:
-            requests: { cpu: 250m, memory: 1Gi }
+            requests: { cpu: 100m, memory: 1Gi }
             limits: { memory: 2Gi }
           volumeMounts:
             - name: donnees

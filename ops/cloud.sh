@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Exploitation du déploiement cloud — l'équivalent de « docker compose up »
-# pour Azure. Cinq verbes, tous rejouables :
+# pour Azure. Six verbes, tous rejouables :
 #
 #   ops/cloud.sh deployer    crée l'infrastructure, construit l'image, envoie
 #                            le dépôt source, pose les manifestes
@@ -8,6 +8,8 @@
 #   ops/cloud.sh restituer   provisionne Metabase (Job eds-restituer) et
 #                            affiche l'adresse et le compte administrateur
 #   ops/cloud.sh etat        ce qui tourne
+#   ops/cloud.sh rendre      régénère les manifestes rendus après une
+#                            modification d'infra/k8s/base (puis kubectl apply -k)
 #   ops/cloud.sh detruire    supprime tout ; --oui saute la confirmation
 #
 # Prérequis : az (connecté), terraform, kubectl, et
@@ -148,6 +150,7 @@ case "${1:-}" in
   charger)   charger ;;
   restituer) restituer ;;
   etat)      etat ;;
+  rendre)    verifier_outils; rendre "$(tag_image)"; echo "rendu dans $RENDU" ;;
   detruire)  detruire "${2:-}" ;;
-  *) sed -n '2,15p' "$0"; exit 2 ;;
+  *) sed -n '2,17p' "$0"; exit 2 ;;
 esac
