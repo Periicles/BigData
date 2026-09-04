@@ -2366,6 +2366,14 @@ ressources entier, adresse publique comprise, et purge le coffre — il ne
 reste rien à facturer. Sur un crédit étudiant de 85 €, c'est l'équivalent
 d'un mois continu, ou d'une centaine de démonstrations.
 
+La démonstration qui a produit les captures du § 19 a tenu le cluster
+allumé un peu moins de trois heures, le 4 septembre 2026, chargement
+complet et provisionnement compris ; après `detruire`, `az group list` ne
+montrait plus le groupe, `az keyvault list-deleted` plus le coffre. La
+consommation remonte avec plusieurs heures de retard dans l'API de
+facturation : le relevé du jour même affichait encore zéro, la valeur réelle
+se lit le lendemain dans le portail, poste « Azure for Students ».
+
 # Validation des chiffres
 
 Un chiffre publié sans justification n'est pas un résultat, c'est une
