@@ -64,7 +64,9 @@ Le dépôt lui-même est décrit dans le [README](../README.md).
     - [18.3 Blob plutôt qu'un volume partagé](#183-blob-plutôt-quun-volume-partagé)
   - [19. La sécurité, dans l'ordre où elle est prononcée](#19-la-sécurité-dans-lordre-où-elle-est-prononcée)
   - [20. La nuit, sans superviseur](#20-la-nuit-sans-superviseur)
-  - [21. Limites et coût](#21-limites-et-coût)
+  - [21. Le déploiement, rejoué de bout en bout](#21-le-déploiement-rejoué-de-bout-en-bout)
+  - [22. Ce que le premier passage a appris](#22-ce-que-le-premier-passage-a-appris)
+  - [23. Limites et coût](#23-limites-et-coût)
 - [Validation des chiffres](#validation-des-chiffres)
   - [L'équation de conservation, couche par couche](#léquation-de-conservation-couche-par-couche)
   - [Les indicateurs, confrontés à leur recalcul depuis les faits](#les-indicateurs-confrontés-à-leur-recalcul-depuis-les-faits)
@@ -2231,7 +2233,7 @@ l'abonnement permette : tier Free (le plan de contrôle n'est pas facturé),
 un seul nœud `Standard_B2ms` — 2 vCPU et 8 Go, dans le quota étudiant de
 4 vCPU sur la famille B —, aucune zone de disponibilité, pas de Log
 Analytics. Ce qui manque à ce cluster pour être un cluster de production est
-listé au § 21, et c'est volontaire.
+listé au § 23, et c'est volontaire.
 
 ### 18.3 Blob plutôt qu'un volume partagé
 
@@ -2299,7 +2301,7 @@ Metabase est le seul composant exposé, derrière un équilibreur de charge dont
 `loadBalancerSourceRanges` n'admet que l'adresse de l'opérateur — un
 paramètre Terraform, validé comme CIDR. Ni TLS ni nom de domaine devant : une
 démonstration d'une heure depuis une seule adresse ne les justifie pas, et
-le § 21 les inscrit en limite.
+le § 23 les inscrit en limite.
 
 **LE CLOISONNEMENT N'A PAS BOUGÉ.** Il est prononcé par `sql/50_droits.sql`,
 rejoué à chaque exécution, et le réseau n'y ajoute rien. La démonstration
@@ -2348,7 +2350,183 @@ standard en plus du fichier, et `kubectl logs` le lit tel quel. La table
 `ops.executions` (§ 12) reste la trace durable, dans ClickHouse, sur le disque
 persistant du StatefulSet.
 
-## 21. Limites et coût
+## 21. Le déploiement, rejoué de bout en bout
+
+Ce que les sections précédentes affirment a été exécuté deux fois le
+4 septembre 2026, depuis un abonnement vide jusqu'à sa remise à vide : une
+première fois pour découvrir ce que la lecture des documentations ne dit pas
+(§ 22), une seconde, après correction, sans aucune intervention manuelle.
+Les extraits ci-dessous viennent de cette seconde exécution ; ils sont ce
+qu'un lecteur muni d'un abonnement Azure obtient en rejouant les mêmes
+commandes, et ce qu'un lecteur sans abonnement peut au moins vérifier
+jusqu'au `plan`, qui ne crée rien.
+
+**Ce que Terraform annonce.** Trente et une ressources, aucun secret parmi
+les valeurs affichées : les mots de passe sont des `random_password`, dont
+le plan ne montre que l'existence.
+
+```
+$ terraform -chdir=infra/terraform plan   # extrait : les ressources, puis le bilan
+  azurerm_container_registry.eds
+  azurerm_key_vault.eds
+  azurerm_key_vault_secret.clickhouse["ch-admin-password"]
+  azurerm_key_vault_secret.clickhouse["ch-exploitation-password"]
+  azurerm_key_vault_secret.clickhouse["ch-pilotage-password"]
+  azurerm_key_vault_secret.clickhouse["ch-recherche-password"]
+  azurerm_key_vault_secret.lake_xml
+  azurerm_key_vault_secret.metabase["mb-admin-password"]
+  azurerm_key_vault_secret.metabase["mb-pilotage-password"]
+  azurerm_key_vault_secret.metabase["mb-recherche-password"]
+  azurerm_key_vault_secret.sel
+  azurerm_kubernetes_cluster.eds
+  azurerm_resource_group.eds
+  azurerm_role_assignment.csi_secrets
+  azurerm_role_assignment.kubelet_acr
+  azurerm_role_assignment.kubelet_blob
+  azurerm_role_assignment.operateur_blob
+  azurerm_role_assignment.operateur_secrets
+  azurerm_storage_account.eds
+  azurerm_storage_container.lake
+  azurerm_storage_container.source
+  random_password.clickhouse["ch-admin-password"]
+  random_password.clickhouse["ch-exploitation-password"]
+  random_password.clickhouse["ch-pilotage-password"]
+  random_password.clickhouse["ch-recherche-password"]
+  random_password.metabase["mb-admin-password"]
+  random_password.metabase["mb-pilotage-password"]
+  random_password.metabase["mb-recherche-password"]
+  random_password.sel
+  random_string.suffixe
+  time_sleep.propagation_rbac
+  Plan: 31 to add, 0 to change, 0 to destroy.
+```
+
+**Ce que le portail montre une fois posé.** Deux groupes de ressources : le
+premier porte ce que Terraform a décrit, le second est créé par AKS pour le
+nœud, son réseau, l'équilibreur et l'adresse publique du Service Metabase.
+Les étiquettes `projet` et `usage` posées par Terraform s'y lisent.
+
+![Groupe rg-eds-cloud dans le portail Azure](imgs/azure-portail-rg-eds-cloud.png)
+
+![Groupe MC_rg-eds-cloud_aks-eds_francecentral, créé par AKS](imgs/azure-portail-rg-noeud.png)
+
+**Ce que le cluster montre.** Un pod ClickHouse prêt, Metabase encore en
+démarrage (sa JVM met une minute), le CronJob armé pour 03h10, ClickHouse
+sans adresse externe, Metabase avec la sienne, et les quatre volumes liés —
+deux disques managés, deux conteneurs Blob.
+
+```
+$ ops/cloud.sh etat
+  NAME                            READY   STATUS    RESTARTS   AGE
+  pod/clickhouse-0                1/1     Running   0          101s
+  pod/metabase-6679955ff9-8vsk9   0/1     Running   0          101s
+  
+  NAME                     SCHEDULE     TIMEZONE       SUSPEND   ACTIVE   LAST SCHEDULE   AGE
+  cronjob.batch/eds-nuit   10 3 * * *   Europe/Paris   False     0        <none>          101s
+  
+  NAME                 TYPE           CLUSTER-IP     EXTERNAL-IP    PORT(S)             AGE
+  service/clickhouse   ClusterIP      10.0.139.134   <none>         8123/TCP,9000/TCP   102s
+  service/metabase     LoadBalancer   10.0.78.108    4.176.11.122   3000:30556/TCP      102s
+  
+  NAME                                         STATUS   VOLUME                                     CAPACITY   ACCESS MODES   STORAGECLASS   VOLUMEATTRIBUTESCLASS   AGE
+  persistentvolumeclaim/donnees-clickhouse-0   Bound    pvc-530f42cb-08e8-4149-ae10-27753fe0f0da   10Gi       RWO            managed-csi    <unset>                 101s
+  persistentvolumeclaim/lake                   Bound    eds-lake                                   1Gi        RWX            blob-fuse      <unset>                 101s
+  persistentvolumeclaim/metabase-data          Bound    pvc-46bb20e0-a8b2-4f30-92ca-d28596703285   2Gi        RWO            managed-csi    <unset>                 101s
+  persistentvolumeclaim/source                 Bound    eds-source                                 1Gi        ROX            blob-fuse      <unset>                 101s
+```
+
+**Ce que le chargement produit.** Le journal du Job est celui du § 11, au
+caractère près : mêmes étapes, mêmes compteurs qu'en local — 74 481 lignes
+en silver, 69 049 en gold.
+
+```
+$ ops/cloud.sh charger   # extrait du journal du Job eds-charger
+  14:48:55  INFO     étape terminée  (run_id=6009fb00111a etape=lake jour=2026-08-01 lignes=244 duree_s=0.32)
+  14:48:55  INFO     étape terminée  (run_id=6009fb00111a etape=bronze jour=2026-08-01 lignes=2487 duree_s=0.097)
+  14:48:55  INFO     étape terminée  (run_id=6009fb00111a etape=lake jour=2026-08-02 lignes=223 duree_s=0.163)
+  14:48:56  INFO     étape terminée  (run_id=6009fb00111a etape=bronze jour=2026-08-02 lignes=1985 duree_s=0.08)
+  14:49:03  INFO     étape terminée  (run_id=6009fb00111a etape=referentiels lignes=36 duree_s=0.12)
+  14:49:04  INFO     étape terminée  (run_id=6009fb00111a etape=silver lignes=74481 duree_s=0.344)
+  14:49:04  INFO     étape terminée  (run_id=6009fb00111a etape=gold lignes=69049 duree_s=0.311)
+  14:49:04  INFO     étape terminée  (run_id=6009fb00111a etape=droits lignes=30 duree_s=0.053)
+  14:49:04  INFO     terminé  (run_id=6009fb00111a)
+```
+
+**Ce que le moteur refuse.** Depuis l'intérieur du pod, avec le mot de passe
+lu dans le volume projeté, le compte de pilotage est refusé sur la base de
+recherche et servi sur la sienne. Le code de sortie 497 est celui de
+ClickHouse, pas d'un contrôle applicatif.
+
+```
+$ kubectl -n eds exec clickhouse-0 -- sh -c 'clickhouse-client --user eds_pilotage --password "$(cat /mnt/secrets/ch-pilotage-password)" -q "SELECT count() FROM gold_recherche.coh_prevalence"'
+Received exception from server (version 25.8.33):
+Code: 497. DB::Exception: eds_pilotage: Not enough privileges. To execute this query, it's necessary to have the grant SELECT for at least one column on gold_recherche.coh_prevalence. (ACCESS_DENIED)
+(query: SELECT count() FROM gold_recherche.coh_prevalence)
+command terminated with exit code 497
+
+$ kubectl -n eds exec clickhouse-0 -- sh -c 'clickhouse-client --user eds_pilotage --password "$(cat /mnt/secrets/ch-pilotage-password)" -q "SELECT count() FROM gold_pilotage.kpi_dms_service"'
+8
+```
+
+**Ce que la restitution pose.** Les trois tableaux de bord et leurs
+31 questions, vérifiées une à une par l'API avant que le script ne rende
+l'adresse. Le mot de passe n'est jamais affiché : la commande pour le lire
+dans le coffre l'est.
+
+```
+$ ops/cloud.sh restituer   # extrait
+  14:49:51  INFO     mise en page posée : Pilotage hospitalier (19 cartes)
+  14:49:53  INFO     mise en page posée : Recherche clinique (7 cartes)
+  14:49:54  INFO     mise en page posée : Activité technique et facturation (11 cartes)
+  14:49:57  INFO     tableaux de bord posés et vérifiés : 31 questions contrôlées via l'API, toutes conformes
+  Metabase          http://4.176.11.122:3000  (depuis 82.225.215.89/32 seulement)
+  Administrateur    admin@eds-chu.local
+  Mot de passe      az keyvault secret show --vault-name kv-eds-c1mxtg --name mb-admin-password --query value -o tsv
+```
+
+**Ce qu'il reste après.** Rien. Le groupe de ressources et celui du nœud
+disparaissent avec `terraform destroy` ; le coffre est purgé et non
+simplement supprimé, sans quoi son nom resterait réservé et facturable
+pendant la durée de rétention.
+
+```
+$ ops/cloud.sh detruire --oui   # extrait
+  Destroy complete! Resources: 31 destroyed.
+  détruit
+$ az group list --query "[].name" -o tsv
+  Docker-Efrei
+  NetworkWatcherRG
+$ az keyvault list-deleted --query "[].name" -o tsv
+  (vide : le coffre est purgé, pas seulement supprimé)
+```
+
+## 22. Ce que le premier passage a appris
+
+Le premier déploiement réel a échoué cinq fois avant de réussir, et aucune
+des cinq causes ne se lisait dans une documentation. Elles sont consignées
+ici parce qu'un lecteur qui rejoue le déploiement sur un autre abonnement
+les rencontrera peut-être sous une autre forme, et parce que chacune a
+changé quelque chose dans le dépôt.
+
+| Symptôme | Cause | Ce qui a changé |
+| --- | --- | --- |
+| `az acr build` : `Resource group 'rg-shopeasy-dev' could not be found` | Le poste avait un groupe de ressources par défaut dans sa configuration `az` ; la commande l'a pris sans le dire | Chaque commande `az` du script nomme son groupe explicitement |
+| `azureBlobStorage(eds_lake)` : `Not enough privileges … grant NAMED COLLECTION ON eds_lake` | L'image ClickHouse crée le compte d'administration avec `access_management`, mais pas `named_collection_control` | Un fragment `users.d` monté par ConfigMap donne le droit au compte |
+| Pod du pipeline en `Pending`, `Insufficient cpu` | Les pods système d'AKS réservent déjà 1 vCPU sur les 1,9 alloués d'un B2ms ; ClickHouse et Metabase prenaient le reste | Requêtes CPU abaissées (300 m, 100 m, 100 m) ; ce sont des minimums garantis, pas des plafonds |
+| Pod en `ImagePullBackOff` sur un tag inexistant | Les manifestes étaient rendus sur `git HEAD`, qui avait avancé depuis la construction de l'image | Le tag construit est mémorisé dans `infra/k8s/.image-tag` ; un verbe `image` reconstruit et rend ensemble |
+| `eds.run --tout` réussi en code 0, mais **zéro jour ingéré** | Le pilote Blob CSI passe `--cancel-list-on-mount-seconds=10` à blobfuse2 : tout listage rend un répertoire vide pendant dix secondes après le montage, et le pipeline liste les jours dès son démarrage | `--cancel-list-on-mount-seconds=0` dans les deux volumes persistants |
+
+Le dernier mérite qu'on s'y arrête. Le pipeline a terminé sans erreur,
+silver et gold reconstruits à zéro ligne, et un lecteur pressé du journal
+aurait pu conclure à un dépôt vide côté CHU — c'est exactement le cas
+« aucun fichier trouvé » que le § 10 range parmi les erreurs métier, à ne
+pas relancer. La règle du § 11 a joué : `aucun référentiel dans le lake`
+était un `WARNING`, donc lu, donc suspect. Un montage qui répond « vide » au
+lieu de répondre « erreur » est le genre de défaut qu'aucun test unitaire
+n'attrape, et qu'un déploiement qu'on n'exécute pas vraiment ne révèle
+jamais.
+
+## 23. Limites et coût
 
 Ce déploiement est une démonstration, et chacune des lignes ci-dessous est
 ce qu'il faudrait ajouter pour qu'il cesse de l'être. Aucune n'est cachée
@@ -2374,9 +2552,9 @@ ressources entier, adresse publique comprise, et purge le coffre — il ne
 reste rien à facturer. Sur un crédit étudiant de 85 €, c'est l'équivalent
 d'un mois continu, ou d'une centaine de démonstrations.
 
-La démonstration qui a produit les captures du § 19 a tenu le cluster
-allumé un peu moins de trois heures, le 4 septembre 2026, chargement
-complet et provisionnement compris ; après `detruire`, `az group list` ne
+Les deux passages du 4 septembre 2026 (§ 21) ont tenu le cluster allumé
+un peu moins de trois heures au total, chargement complet et
+provisionnement compris ; après chaque `detruire`, `az group list` ne
 montrait plus le groupe, `az keyvault list-deleted` plus le coffre. La
 consommation remonte avec plusieurs heures de retard dans l'API de
 facturation : le relevé du jour même affichait encore zéro, la valeur réelle
