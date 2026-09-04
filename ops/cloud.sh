@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # Exploitation du déploiement cloud — l'équivalent de « docker compose up »
-# pour Azure. Six verbes, tous rejouables :
+# pour Azure. Sept verbes, tous rejouables :
 #
 #   ops/cloud.sh deployer    crée l'infrastructure, construit l'image, envoie
 #                            le dépôt source, pose les manifestes
+#   ops/cloud.sh image       reconstruit l'image depuis HEAD et rend les
+#                            manifestes dessus (puis kubectl apply -k)
 #   ops/cloud.sh charger     recharge tout le dépôt (Job eds-charger)
 #   ops/cloud.sh restituer   provisionne Metabase (Job eds-restituer) et
 #                            affiche l'adresse et le compte administrateur
@@ -22,6 +24,9 @@ BASE="$RACINE/infra/k8s/base"
 RENDU="$RACINE/infra/k8s/rendu"
 NS=eds
 DELAI_JOB_S=1200
+# Tag de la dernière image construite : les manifestes sont rendus dessus,
+# pas sur HEAD, qui bouge à chaque commit sans que l'image ait été refaite.
+TAG_IMAGE="$RACINE/infra/k8s/.image-tag"
 
 echo_err() { echo "$*" >&2; }
 
@@ -36,7 +41,20 @@ verifier_outils() {
 
 sortie_tf() { terraform -chdir="$TF" output -raw "$1"; }
 
-tag_image() { git -C "$RACINE" rev-parse --short HEAD; }
+tag_image() {
+  [[ -f "$TAG_IMAGE" ]] && { cat "$TAG_IMAGE"; return; }
+  echo_err "aucune image construite : ops/cloud.sh deployer ou ops/cloud.sh image"; exit 2
+}
+
+# Construite dans Azure, pour l'architecture des nœuds : ni Docker local,
+# ni croisement ARM/AMD64 depuis un Mac.
+construire_image() {
+  local tag; tag=$(git -C "$RACINE" rev-parse --short HEAD)
+  az acr build --resource-group "$(sortie_tf resource_group_name)" \
+    --registry "$(sortie_tf acr_name)" --image "eds-pipeline:$tag" \
+    --platform linux/amd64 --file "$RACINE/infra/Dockerfile" "$RACINE"
+  echo "$tag" > "$TAG_IMAGE"
+}
 
 # Remplace les marque-places des manifestes par les sorties Terraform. Le
 # résultat porte des identifiants propres à CE déploiement : il n'est pas
@@ -65,12 +83,7 @@ deployer() {
   verifier_outils
   terraform -chdir="$TF" init -input=false
   terraform -chdir="$TF" apply -input=false -auto-approve
-  local tag; tag=$(tag_image)
-  # Construite dans Azure, pour l'architecture des nœuds : ni Docker local,
-  # ni croisement ARM/AMD64 depuis un Mac.
-  az acr build --resource-group "$(sortie_tf resource_group_name)" \
-    --registry "$(sortie_tf acr_name)" --image "eds-pipeline:$tag" \
-    --platform linux/amd64 --file "$RACINE/infra/Dockerfile" "$RACINE"
+  construire_image
   az aks get-credentials --resource-group "$(sortie_tf resource_group_name)" \
     --name "$(sortie_tf aks_name)" --overwrite-existing
   # Le dépôt du CHU, par l'identité de l'opérateur (rôle posé par Terraform).
@@ -78,10 +91,10 @@ deployer() {
     --account-name "$(sortie_tf storage_account_name)" \
     --destination source --source "$RACINE/eds-chu-sujet/source-filestorage" \
     --overwrite --only-show-errors
-  rendre "$tag"
+  rendre "$(tag_image)"
   kubectl apply -k "$RENDU"
   kubectl -n "$NS" rollout status statefulset/clickhouse --timeout=600s
-  echo "déployé — image eds-pipeline:$tag"
+  echo "déployé — image eds-pipeline:$(tag_image)"
 }
 
 # Lance un Job à partir de son manifeste rendu, attend sa fin, affiche ses
@@ -141,7 +154,7 @@ detruire() {
     kubectl delete -k "$RENDU" --ignore-not-found --wait=true --timeout=300s || true
   fi
   terraform -chdir="$TF" destroy -input=false -auto-approve
-  rm -rf "$RENDU"
+  rm -rf "$RENDU" "$TAG_IMAGE"
   echo "détruit"
 }
 
@@ -151,6 +164,7 @@ case "${1:-}" in
   restituer) restituer ;;
   etat)      etat ;;
   rendre)    verifier_outils; rendre "$(tag_image)"; echo "rendu dans $RENDU" ;;
+  image)     verifier_outils; construire_image; rendre "$(tag_image)"; echo "image eds-pipeline:$(tag_image), rendu dans $RENDU" ;;
   detruire)  detruire "${2:-}" ;;
-  *) sed -n '2,17p' "$0"; exit 2 ;;
+  *) sed -n '2,19p' "$0"; exit 2 ;;
 esac
