@@ -3,7 +3,16 @@
     python docs/en_pdf.py docs/RAPPORT.md /tmp/rapport.html "Titre"
     "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
         --headless --disable-gpu --no-pdf-header-footer \
+        --virtual-time-budget=30000 \
         --print-to-pdf=docs/RAPPORT.pdf file:///tmp/rapport.html
+
+`--virtual-time-budget` N'EST PAS FACULTATIF : les diagrammes Mermaid sont
+dessinés par un script, après le chargement de la page. Sans ce délai, Chrome
+imprime avant que le dessin existe et le PDF sort avec deux cadres vides.
+L'impression a donc besoin du réseau, le temps de charger Mermaid depuis son
+CDN — c'est le prix à payer pour que le diagramme n'ait qu'une seule source de
+vérité, le bloc ```mermaid du Markdown, qui reste par ailleurs rendu tel quel
+par GitHub.
 
 DEUX DÉPENDANCES HORS `requirements.txt`, ET C'EST VOULU. `markdown` et
 `pygments` ne servent qu'à fabriquer un livrable de lecture : les embarquer
@@ -19,12 +28,34 @@ paginer du CSS `break-before`.
 """
 import re
 import sys
+from html import escape
 from pathlib import Path
 
 import markdown
 
+# Épinglé : une version majeure de Mermaid change la syntaxe acceptée, et un
+# diagramme qui ne compile plus ne laisse qu'un cadre vide dans le PDF.
+MERMAID = "https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.min.js"
+
 source, sortie, titre = Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3]
 texte = source.read_text(encoding="utf-8")
+
+# ── Diagrammes ──────────────────────────────────────────────────────────
+# Les blocs ```mermaid sont retirés AVANT le rendu Markdown : laissés en
+# place, ils sortiraient en bloc de code coloré, c'est-à-dire en code source
+# imprimé au lieu du dessin. Ils sont remis après, dans la balise que Mermaid
+# reconnaît, et échappés — sans quoi le navigateur interpréterait les `<br/>`
+# des libellés comme du balisage et Mermaid ne les recevrait jamais.
+_ATTENTE_DIAGRAMME = "\x00diagramme-{}\x00"
+diagrammes: list[str] = []
+
+
+def _extraire(m: re.Match) -> str:
+    diagrammes.append(m.group(1))
+    return _ATTENTE_DIAGRAMME.format(len(diagrammes) - 1)
+
+
+texte = re.sub(r"```mermaid\n(.*?)\n```", _extraire, texte, flags=re.S)
 
 corps = markdown.markdown(
     texte,
@@ -66,6 +97,12 @@ def _absolutiser(html: str) -> str:
     return re.sub(r'src="([^"]+)"', sub, html)
 
 corps = _absolutiser(corps)
+
+for numero, diagramme in enumerate(diagrammes):
+    corps = corps.replace(
+        _ATTENTE_DIAGRAMME.format(numero),
+        f'<pre class="mermaid">{escape(diagramme)}</pre>',
+    )
 
 # Chaque chapitre commence une page — sauf le tout premier titre, et sauf la
 # section qui suit immédiatement une page de partie (elles feraient deux sauts
@@ -163,11 +200,52 @@ blockquote { margin: 0 0 9pt; padding: 7pt 11pt; background: #fff8e6;
 blockquote p:last-child { margin-bottom: 0; }
 hr { border: none; border-top: 0.6pt solid #d5d9de; margin: 14pt 0; }
 a { color: #0b3d6b; text-decoration: none; }
+/* Diagrammes. Le SVG produit par Mermaid porte une largeur intrinsèque qui
+   déborde volontiers de la page : on la plafonne, et on borne la hauteur pour
+   qu'un diagramme haut n'occupe pas deux pages à moitié vides. */
+pre.mermaid { background: none; border: none; padding: 0; margin: 12pt 0;
+              text-align: center; break-inside: avoid; }
+/* 215 mm, et pas la hauteur utile de la page (259 mm) : le diagramme doit
+   tenir SOUS le titre de sa section, sinon il bascule seul sur la page
+   suivante et laisse derrière lui une page presque blanche. */
+pre.mermaid svg { max-width: 100%; max-height: 215mm; height: auto; }
+/* Les libellés de Mermaid sont du HTML posé dans le SVG : sans cette remise à
+   zéro, ils héritent du corps de texte et se retrouvent justifiés et coupés
+   par des césures À L'INTÉRIEUR des boîtes du diagramme. */
+pre.mermaid foreignObject div, pre.mermaid span, pre.mermaid p {
+  text-align: center; hyphens: none; }
+/* Le titre d'un sous-graphe ne dispose que d'une ligne : Mermaid ne réserve
+   pas la hauteur d'une seconde, qui passerait sous la bordure du cadre. */
+pre.mermaid .cluster-label div, pre.mermaid .cluster-label span {
+  white-space: nowrap; }
+"""
+
+SCRIPT = f"""
+<script src="{MERMAID}"></script>
+<script>
+  mermaid.initialize({{
+    startOnLoad: true,
+    theme: "neutral",
+    // `wrappingWidth` par défaut vaut 200 px : le titre du sous-graphe y est
+    // coupé en deux lignes, dont la seconde passe sous la bordure du cadre —
+    // Mermaid ne réserve la place que d'une ligne pour ces titres.
+    flowchart: {{ htmlLabels: true, useMaxWidth: true, wrappingWidth: 400 }},
+    // LE MODÈLE EN ÉTOILE SE LIT DE HAUT EN BAS, PAS DE GAUCHE À DROITE.
+    // En disposition par défaut, les trois tables de faits s'alignent côte à
+    // côte : le dessin devient deux fois plus large que haut, et réduit à la
+    // largeur d'une page A4 il perd ses noms de colonnes. En `LR`, les rangs
+    // se succèdent horizontalement et les entités d'un même rang s'empilent —
+    // le dessin devient plus haut que large, donc lisible en portrait.
+    er: {{ useMaxWidth: true, layoutDirection: "LR" }},
+  }});
+</script>
 """
 
 sortie.write_text(
     f"<!doctype html><html lang=fr><head><meta charset=utf-8>"
-    f"<title>{titre}</title><style>{STYLE}</style></head><body>{corps}</body></html>",
+    f"<title>{titre}</title><style>{STYLE}</style></head>"
+    f"<body>{corps}{SCRIPT}</body></html>",
     encoding="utf-8",
 )
-print(f"{sortie} écrit ({len(corps)} caractères de HTML)")
+print(f"{sortie} écrit ({len(corps)} caractères de HTML, "
+      f"{len(diagrammes)} diagrammes)")

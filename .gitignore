@@ -254,3 +254,8 @@ Screenshots/
 # (impression navigateur) ne sont pas versionnés.
 docs/imgs/*.pdf
 docs/imgs/.DS_Store
+
+# L'outil qui fabrique docs/RAPPORT.pdf depuis le Markdown. Il sert au poste
+# de travail, pas au rendu : le livrable est le rapport, pas sa chaîne de
+# fabrication. Il reste donc sur disque, hors du dépôt.
+docs/en_pdf.py
