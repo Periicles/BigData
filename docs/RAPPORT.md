@@ -57,6 +57,14 @@ Le dépôt lui-même est décrit dans le [README](../README.md).
   - [17. Les nouveaux indicateurs](#17-les-nouveaux-indicateurs)
     - [17.1 Ce qu'ils portent, et ce qu'ils prouvent](#171-ce-quils-portent-et-ce-quils-prouvent)
     - [17.2 Ce qu'il a fallu accepter](#172-ce-quil-a-fallu-accepter)
+- [Partie 4 — Le déploiement cloud](#partie-4-le-déploiement-cloud)
+  - [18. Ce qui est déployé, et pourquoi là](#18-ce-qui-est-déployé-et-pourquoi-là)
+    - [18.1 Le même entrepôt, ailleurs](#181-le-même-entrepôt-ailleurs)
+    - [18.2 AKS plutôt que Container Apps](#182-aks-plutôt-que-container-apps)
+    - [18.3 Blob plutôt qu'un volume partagé](#183-blob-plutôt-quun-volume-partagé)
+  - [19. La sécurité, dans l'ordre où elle est prononcée](#19-la-sécurité-dans-lordre-où-elle-est-prononcée)
+  - [20. La nuit, sans superviseur](#20-la-nuit-sans-superviseur)
+  - [21. Limites et coût](#21-limites-et-coût)
 - [Validation des chiffres](#validation-des-chiffres)
   - [L'équation de conservation, couche par couche](#léquation-de-conservation-couche-par-couche)
   - [Les indicateurs, confrontés à leur recalcul depuis les faits](#les-indicateurs-confrontés-à-leur-recalcul-depuis-les-faits)
@@ -2204,7 +2212,7 @@ qu'aucun des trois outils ne fait seul : construire l'image dans le
 registre, envoyer le dépôt source, rendre les identifiants du déploiement
 dans les manifestes, poser, attendre. Quatre verbes — `deployer`, `charger`,
 `restituer`, `detruire` — et l'équivalent cloud de « quatre commandes » du
-README.
+README ; trois de plus pour l'exploitation (`etat`, `image`, `rendre`).
 
 ### 18.2 AKS plutôt que Container Apps
 

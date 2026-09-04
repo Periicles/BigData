@@ -336,6 +336,8 @@ ops/cloud.sh deployer      # ~10 min : AKS, stockage, coffre, registre, image, m
 ops/cloud.sh charger       # eds.run --tout, dans le cluster
 ops/cloud.sh restituer     # eds.restitution, puis l'adresse de Metabase
 ops/cloud.sh etat          # ce qui tourne
+ops/cloud.sh image         # reconstruit l'image depuis HEAD, rend les manifestes
+ops/cloud.sh rendre        # régénère les manifestes après un changement d'infra/k8s/base
 ops/cloud.sh detruire      # tout, y compris l'IP publique
 ```
 
@@ -561,7 +563,7 @@ docs/                    le rapport, son rendu PDF et ses captures
 
 | Document | Contenu |
 |---|---|
-| [`docs/RAPPORT.md`](docs/RAPPORT.md) | **Le rapport de conception**, en trois parties — l'interface d'analyse, l'automatisation, l'évolution demandée par le CHU — puis la validation des chiffres et les leçons du projet. Le document à lire en premier. Également fourni en [PDF](docs/RAPPORT.pdf), sommaire compris. |
+| [`docs/RAPPORT.md`](docs/RAPPORT.md) | **Le rapport de conception**, en quatre parties — l'interface d'analyse, l'automatisation, l'évolution demandée par le CHU, le déploiement cloud — puis la validation des chiffres et les leçons du projet. Le document à lire en premier. Également fourni en [PDF](docs/RAPPORT.pdf), sommaire compris. |
 | [`exploration/RAPPORT-EXPLORATION.md`](exploration/RAPPORT-EXPLORATION.md) | L'état des lieux des sources, établi **avant** toute décision d'architecture : volumétrie, anomalies chiffrées, mesure du risque de ré-identification. |
 | [`sql/99_verifications.sql`](sql/99_verifications.sql) | Requêtes d'inspection à exécuter dans la console SQL, commentées. |
 
