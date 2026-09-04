@@ -1,0 +1,20 @@
+# Le contexte envoyé à `az acr build` ne contient que le code : ni données
+# (identités en clair dans eds-chu-sujet, lake pseudonymisé), ni journaux,
+# ni environnement virtuel, ni historique git.
+.git
+.venv
+.env
+.env.example
+eds-chu-sujet
+lake
+logs
+docker
+docs
+exploration
+tests
+infra/terraform
+infra/k8s
+Screenshots
+**/__pycache__
+.pytest_cache
+.ruff_cache
