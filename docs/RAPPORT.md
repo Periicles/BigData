@@ -1774,7 +1774,7 @@ sont donc gardés.
 | État de l'entrepôt, sans rien modifier | `.venv/bin/python -m eds.run --etat` | alerte en cours s'il y en a une (§ 9), jours ingérés/en attente, volumes par couche, cinq dernières étapes. Le verdict « ingéré » est rendu par `jours_deja_ingeres`, celui-là même qui commande l'exécution incrémentale : un jour sans séjour — le dépôt d'évolution du 2026-08-29 n'apporte que des actes — n'est donc pas déclaré en attente pour cette seule raison |
 | Provisionnement de la restitution | `.venv/bin/python -m eds.restitution` | (re)crée connexions, comptes, droits et tableaux de bord Metabase — idempotent, ~6 s au premier passage, ~1,2 s ensuite |
 | État de Metabase, sans rien modifier | `.venv/bin/python -m eds.restitution --etat` | connexions et tableaux de bord déjà provisionnés |
-| Tests unitaires, hors ligne | `.venv/bin/python -m pytest` | 129 tests sur les fonctions pures — pseudonymisation, découpage SQL, résolution des référentiels, seuils — et sur le superviseur (verrou, relance, alerte), qui écrit dans un répertoire jetable. **Ne demandent ni Docker ni entrepôt**, et s'exécutent en moins d'une seconde |
+| Tests unitaires, hors ligne | `.venv/bin/python -m pytest` | 169 tests sur les fonctions pures — pseudonymisation, découpage SQL, résolution des référentiels, seuils — et sur le superviseur (verrou, relance, alerte), qui écrit dans un répertoire jetable. **Ne demandent ni Docker ni entrepôt**, et s'exécutent en moins d'une seconde |
 | Contrôle des 428 propriétés | `.venv/bin/python -m tests.verifier` | rejoue les cinq sections de vérification (dont `conformite`, § 6) |
 | Démonstrations rejouables | `.venv/bin/python -m tests.demontrer` | dont `reprise` (§ 10) et `restitution` (cloisonnement vu depuis Metabase) |
 
@@ -2147,6 +2147,214 @@ déposée décrit le normal. Elle est donc journalisée en `INFO`, et `WARNING`
 redevient ce qu'il doit être — le niveau de ce qui mérite d'être lu. Le § 11
 énonce la règle pour les trois niveaux.
 
+# Partie 4 — Le déploiement cloud
+
+## 18. Ce qui est déployé, et pourquoi là
+
+### 18.1 Le même entrepôt, ailleurs
+
+**LA RÈGLE QUI COMMANDE TOUT LE RESTE : AUCUNE BIFURCATION DANS LE CODE.** Le
+pipeline qui tourne sur Azure est celui des trois parties précédentes, à
+l'octet près — même image des sources, même lake, mêmes fichiers SQL, mêmes
+droits. Ce qui change entre le poste et le cluster tient en cinq variables
+d'environnement, et l'absence de chacune conserve le comportement local :
+
+| Variable | Sur le poste (absente) | Dans le cluster | Qui la lit |
+| --- | --- | --- | --- |
+| `EDS_SOURCE` | `eds-chu-sujet/source-filestorage/` | `/data/source`, conteneur Blob monté | `eds.config`, à l'import |
+| `EDS_LAKE` | `lake/` | `/data/lake`, conteneur Blob monté | idem |
+| `EDS_LAKE_LECTEUR` | `fichier` — ClickHouse lit `file()` | `blob` — ClickHouse lit `azureBlobStorage()` | `eds.warehouse.source_lake` |
+| `CH_HOST` | `localhost` (port publié par Docker) | `clickhouse` (nom du Service) | `eds.warehouse.client` |
+| `MB_URL` | `http://localhost:3000` | `http://metabase:3000` | `eds.restitution` |
+
+Une bifurcation aurait été plus rapide à écrire — un `if cloud:` dans le
+chargeur bronze — et aurait produit deux pipelines qui divergent sans que
+rien ne le signale. Ici, `source_lake` est la **seule** fonction qui sache
+qu'Azure existe : elle reçoit un chemin relatif, un format et une structure,
+et rend l'expression de table que le moteur doit lire. Les cinq chargeurs et
+les référentiels l'appellent ; un test unitaire vérifie qu'en mode `blob`
+aucun d'eux n'émet plus de `file()`. La colonne de provenance
+`_source_path` garde la même forme dans les deux modes (`lake/<chemin>`) :
+une ligne chargée en local et la même ligne chargée en cloud portent la même
+traçabilité, c'est également testé.
+
+```
+                     Azure · France Central · rg-eds-cloud
+ ┌──────────────────────────────────────────────────────────────────┐
+ │  Storage Account            Key Vault             ACR (Basic)    │
+ │   conteneur `source`  ─┐     secrets générés       image pipeline│
+ │   conteneur `lake`    ─┤     par Terraform                       │
+ │                        │        │                                │
+ │  AKS 1.35 · Free · 1 nœud B2ms  │ CSI Secrets Store              │
+ │  ┌──────────────────────────────▼─────────────────────────────┐  │
+ │  │ namespace eds                                              │  │
+ │  │  pipeline (Job / CronJob)   ClickHouse (StatefulSet)       │  │
+ │  │   /data/source ◄─ blobfuse   azureBlobStorage(eds_lake)    │  │
+ │  │   /data/lake   ◄─ blobfuse   PVC 10 Go · ClusterIP         │  │
+ │  │                              Metabase (Deployment)         │  │
+ │  │                               PVC H2 · LoadBalancer        │  │
+ │  └────────────────────────────────────────────────────────────┘  │
+ └──────────────────────────────────────────────────────────────────┘
+```
+
+Le socle est décrit en Terraform (`infra/terraform/`, onze fichiers, un
+état local), les composants en manifestes Kubernetes (`infra/k8s/base/`),
+l'image dans `infra/Dockerfile`. Un script, `ops/cloud.sh`, enchaîne ce
+qu'aucun des trois outils ne fait seul : construire l'image dans le
+registre, envoyer le dépôt source, rendre les identifiants du déploiement
+dans les manifestes, poser, attendre. Quatre verbes — `deployer`, `charger`,
+`restituer`, `detruire` — et l'équivalent cloud de « quatre commandes » du
+README.
+
+### 18.2 AKS plutôt que Container Apps
+
+Trois charges de travail — un moteur avec disque, une application web, un
+lot nocturne — n'ont pas besoin d'un cluster Kubernetes. Azure Container
+Apps les aurait portées sans nœud à gérer, pour moins cher, et la question
+mérite d'être posée franchement plutôt que tranchée par habitude.
+
+AKS a été retenu pour ce que la démonstration doit **montrer**, pas pour ce
+dont l'entrepôt a besoin. Un StatefulSet avec son disque persistant, un
+CronJob avec sa politique de concurrence, un pilote CSI qui projette des
+secrets, un autre qui monte un conteneur Blob comme un répertoire : ce sont
+des objets que le sujet demande de savoir manipuler, et qui n'ont pas
+d'équivalent lisible ailleurs. Le prix de ce choix est tenu au plus bas que
+l'abonnement permette : tier Free (le plan de contrôle n'est pas facturé),
+un seul nœud `Standard_B2ms` — 2 vCPU et 8 Go, dans le quota étudiant de
+4 vCPU sur la famille B —, aucune zone de disponibilité, pas de Log
+Analytics. Ce qui manque à ce cluster pour être un cluster de production est
+listé au § 21, et c'est volontaire.
+
+### 18.3 Blob plutôt qu'un volume partagé
+
+Sur le poste, ClickHouse et le pipeline partagent un répertoire : le
+premier lit ce que le second écrit, par un montage Docker. Dans un cluster,
+le réflexe serait un volume `ReadWriteMany` monté dans les deux pods — Azure
+Files, en l'occurrence. Il aurait fonctionné sans toucher au code, et il a
+été écarté pour deux raisons.
+
+La première est de fond : un entrepôt cloud lit son lake par l'API de
+l'objet, pas à travers un système de fichiers réseau émulé. ClickHouse le
+sait faire nativement — `azureBlobStorage()` lit un blob comme `file()` lit
+un fichier, avec les mêmes formats et la même colonne `_path`. La seconde est
+de prudence : un montage SMB partagé entre deux pods, sur un nœud unique,
+ajoute une couche dont aucune des deux parties n'a besoin.
+
+Le pipeline, lui, reste sur un système de fichiers : `eds.lake` lit et écrit
+des chemins, avec `csv`, `json` et DuckDB, et le sujet impose que les
+identités ne touchent jamais un disque intermédiaire. Réécrire cette
+transformation en flux vers l'API Blob aurait été possible, et aurait
+remplacé un module éprouvé par un module neuf, pour rien. Les deux
+conteneurs sont donc montés dans le seul pod du pipeline, par blobfuse : la
+pseudonymisation lit `/data/source` et écrit `/data/lake`, en flux, comme sur
+le poste ; le blob est écrit à la fermeture du fichier, et ClickHouse le lit
+par l'API l'instant d'après. La sonde d'accès au lake — un témoin écrit par
+Python puis lu par le moteur avant toute ingestion, § 10 — prouve à chaque
+exécution que les deux chemins convergent bien sur le même conteneur.
+
+## 19. La sécurité, dans l'ordre où elle est prononcée
+
+**LA RÉGION D'ABORD.** Un entrepôt de santé français se déploie sur un
+hébergeur certifié HDS ; France Central l'est, les autres régions Azure
+européennes aussi mais elles n'apportent rien de plus ici. La donnée qui
+entre dans le conteneur `source` porte des identités en clair — c'est le
+dépôt du CHU tel qu'il est déposé, et la Partie 1 explique pourquoi on ne le
+transforme pas avant de le lire. Le jeu est synthétique ; le principe est
+appliqué comme s'il ne l'était pas.
+
+**LES SECRETS NE SONT LUS PAR PERSONNE.** Terraform génère les quatre mots de
+passe ClickHouse, le sel de pseudonymisation, les trois comptes Metabase, et
+les dépose dans un Key Vault. L'addon Secrets Store CSI de l'AKS, avec sa
+propre identité managée et le seul rôle « Key Vault Secrets User », les
+projette dans chaque pod et les recopie dans un Secret Kubernetes que les
+conteneurs lisent en variables d'environnement. Aucun manifeste ne porte
+une valeur ; aucun humain n'a eu à en choisir une ; le `.env` du poste n'a
+pas d'équivalent versionné. Le sel, en particulier, n'existe qu'à deux
+endroits : le coffre et la mémoire du pod qui pseudonymise.
+
+**LA CLÉ DU STOCKAGE N'EXISTE QU'À UN ENDROIT.** blobfuse monte les deux
+conteneurs avec l'identité managée du nœud, à qui Terraform donne le rôle
+« Storage Blob Data Contributor » sur le compte : pas de clé pour ce chemin.
+L'envoi du dépôt source par l'opérateur passe par son identité à lui
+(`--auth-mode login`) : pas de clé non plus. Reste ClickHouse, dont le
+connecteur Azure s'authentifie par chaîne de connexion ; elle est rendue par
+Terraform dans un fichier XML — la named collection `eds_lake` — stocké dans
+le Key Vault comme un secret parmi les autres, et monté dans le seul pod du
+moteur, sous `config.d`. Une requête SQL nomme la collection, jamais la clé :
+`azureBlobStorage(eds_lake, blob_path='patients/2026-08-26/patients.csv', …)`.
+C'est la même discipline que le § 3.4 : le secret est là où le moteur le
+lit, pas dans ce que l'applicatif envoie.
+
+**CLICKHOUSE N'EST PAS SUR INTERNET.** Son Service est de type ClusterIP :
+seuls Metabase et le pipeline, dans le même espace de noms, le joignent.
+Metabase est le seul composant exposé, derrière un équilibreur de charge dont
+`loadBalancerSourceRanges` n'admet que l'adresse de l'opérateur — un
+paramètre Terraform, validé comme CIDR. Ni TLS ni nom de domaine devant : une
+démonstration d'une heure depuis une seule adresse ne les justifie pas, et
+le § 21 les inscrit en limite.
+
+**LE CLOISONNEMENT N'A PAS BOUGÉ.** Il est prononcé par `sql/50_droits.sql`,
+rejoué à chaque exécution, et le réseau n'y ajoute rien. La démonstration
+du § 3.4 se rejoue depuis l'intérieur du cluster, avec le mot de passe lu
+dans le volume projeté plutôt qu'affiché :
+
+```bash
+kubectl -n eds exec clickhouse-0 -- sh -c 'clickhouse-client --user eds_pilotage \
+  --password "$(cat /mnt/secrets/ch-pilotage-password)" \
+  -q "SELECT count() FROM gold_recherche.coh_prevalence"'
+# → Code: 497. DB::Exception: eds_pilotage: Not enough privileges. …
+```
+
+Le compte de pilotage lit `gold_pilotage.dms_service` ; il ne voit pas
+`gold_recherche`, ni dans le cluster ni ailleurs. Metabase, branché sur ces
+deux comptes, en hérite exactement comme en local (§ 7.4).
+
+## 20. La nuit, sans superviseur
+
+Sur le poste, `cron` déclenche et ne fait rien d'autre ; `eds.supervision`
+met en face un verrou, une relance bornée et une alerte (§ 9, § 10). Dans le
+cluster, le CronJob `eds-nuit` lance `eds.run` directement, à 03h10 heure de
+Paris, et le module de supervision n'est pas appelé. Ce n'est pas une
+régression, c'est une redistribution : ce que le module apportait à `cron`
+est ce qu'un orchestrateur fournit nativement.
+
+| Le superviseur faisait | Le CronJob fait | Différence |
+| --- | --- | --- |
+| Verrou par PID, repris s'il est périmé | `concurrencyPolicy: Forbid` : un Job encore actif empêche le suivant de démarrer | Le verrou vivait dans un fichier ; ici c'est l'API qui connaît l'état, il n'y a pas de verrou orphelin possible |
+| 3 relances espacées de 10 min, sur échec inattendu seulement | `backoffLimit: 3`, temporisation exponentielle | Le CronJob relance **tout** échec, y compris métier (code 1). Sur une erreur SQL, il relancera trois fois pour rien : c'est la limite acceptée en échange de la simplicité |
+| `logs/ALERTE.txt` + commande de site | L'état du Job (`kubectl -n eds get jobs`) et les trois derniers Jobs conservés, réussis comme échoués | Il n'y a pas de fichier d'alerte parce qu'il n'y a pas de disque durable où le déposer : un pod est éphémère, l'état vit dans l'orchestrateur |
+
+Le journal structuré (§ 11) est inchangé : `eds.journal` écrit sur la sortie
+standard en plus du fichier, et `kubectl logs` le lit tel quel. La table
+`ops.executions` (§ 12) reste la trace durable, dans ClickHouse, sur le disque
+persistant du StatefulSet.
+
+## 21. Limites et coût
+
+Ce déploiement est une démonstration, et chacune des lignes ci-dessous est
+ce qu'il faudrait ajouter pour qu'il cesse de l'être. Aucune n'est cachée
+dans une configuration « à faire plus tard » : elles sont nommées.
+
+| Limite | Conséquence | Ce que serait la version durable |
+| --- | --- | --- |
+| Base applicative Metabase en H2, sur un disque | Un pod redémarré retrouve sa configuration, mais H2 n'est pas prévu pour la concurrence ni les sauvegardes | Azure Database for PostgreSQL, et `MB_DB_TYPE=postgres` |
+| Un nœud, une réplique de chaque composant | Une panne de nœud arrête tout le temps du redémarrage | Deux nœuds au moins, ClickHouse répliqué par Keeper |
+| Pas de TLS devant Metabase | Le mot de passe transite en clair jusqu'à l'équilibreur, depuis une seule adresse | Un ingress avec certificat, un nom de domaine |
+| Pas d'observabilité centralisée | Les journaux vivent le temps du pod | Log Analytics ou équivalent, et une alerte sur l'échec du CronJob |
+| État Terraform local | Un seul poste peut faire évoluer l'infrastructure | Un backend Blob avec verrou |
+| Relance sur erreur métier | Trois exécutions inutiles avant de constater une erreur SQL | Une distinction des codes de sortie dans le pod, ou un opérateur de workflow |
+| Le dépôt source en cloud | Des identités en clair dans un conteneur Blob, hors du CHU | Un dépôt côté CHU, et une pseudonymisation qui s'exécute avant la sortie de son réseau |
+
+**Coût.** Cluster allumé, France Central, tarifs relevés le 4 septembre
+2026 : le nœud B2ms est le poste principal, autour de 2 €/jour ;
+l'équilibreur de charge Standard et son adresse publique, 0,6 € ; le registre
+Basic, 0,15 € ; les trois disques managés et le stockage Blob, quelques
+centimes. Soit environ **2,8 €/jour** et moins d'un euro pour une
+démonstration de trois heures. `ops/cloud.sh detruire` supprime le groupe de
+ressources entier, adresse publique comprise, et purge le coffre — il ne
+reste rien à facturer. Sur un crédit étudiant de 85 €, c'est l'équivalent
+d'un mois continu, ou d'une centaine de démonstrations.
+
 # Validation des chiffres
 
 Un chiffre publié sans justification n'est pas un résultat, c'est une
@@ -2260,7 +2468,7 @@ identiquement le fait et son indicateur ne serait détectée que par la
 confrontation à la référence — laquelle ne couvre pas tous les chiffres.
 
 **Le nombre de contrôles n'est pas une garantie.** 428 propriétés vérifiées et
-129 tests unitaires ne disent rien de ce qui n'est pas mesuré. Deux des défauts
+169 tests unitaires ne disent rien de ce qui n'est pas mesuré. Deux des défauts
 racontés au chapitre suivant sont passés à travers tous ces contrôles : ils
 n'ont été trouvés qu'en fabriquant une donnée qui n'existait pas, et en lisant
 le document produit.

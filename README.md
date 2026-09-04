@@ -320,6 +320,38 @@ du pipeline, même règle que le journal ClickHouse.
 
 ---
 
+## Déploiement cloud
+
+Le même entrepôt tourne sur Azure, pour une démonstration jetable : le socle
+est décrit en Terraform (`infra/terraform/`), les composants en manifestes
+Kubernetes (`infra/k8s/`), l'image du pipeline dans `infra/Dockerfile`. Rien
+ne bifurque dans le code : chaque différence avec le poste est une variable
+d'environnement, dont l'absence conserve le comportement local — `EDS_SOURCE`,
+`EDS_LAKE`, `EDS_LAKE_LECTEUR=blob`, `CH_HOST`, `MB_URL`.
+
+```bash
+cp infra/terraform/terraform.tfvars.example infra/terraform/terraform.tfvars   # abonnement, IP
+az login
+ops/cloud.sh deployer      # ~10 min : AKS, stockage, coffre, registre, image, manifestes
+ops/cloud.sh charger       # eds.run --tout, dans le cluster
+ops/cloud.sh restituer     # eds.restitution, puis l'adresse de Metabase
+ops/cloud.sh etat          # ce qui tourne
+ops/cloud.sh detruire      # tout, y compris l'IP publique
+```
+
+| Sur le poste | Dans le cluster | Pourquoi |
+| --- | --- | --- |
+| `lake/` monté dans ClickHouse, lu par `file()` | conteneur Blob `lake`, lu par `azureBlobStorage()` via la named collection `eds_lake` | pas de volume partagé entre pods ; la clé du stockage vit dans la configuration du serveur, jamais dans une requête |
+| `source-filestorage/` et `lake/` sur disque | les deux conteneurs Blob montés par blobfuse dans le pod du pipeline, avec l'identité du nœud | `eds.lake` voit un système de fichiers ; aucune clé dans le cluster pour ce chemin |
+| `.env` | Key Vault, projeté par l'addon CSI en Secret `eds-secrets` | aucun secret dans un manifeste ; tous générés par Terraform, jamais lus par un humain |
+| `cron` + `eds.supervision` | CronJob `eds-nuit`, `concurrencyPolicy: Forbid`, `backoffLimit: 3` | verrou et relance sont natifs à l'orchestrateur |
+| `localhost:3000` | Service LoadBalancer restreint à `ip_autorisee` | ClickHouse, lui, n'est jamais exposé : ClusterIP seulement |
+
+Coût, cluster allumé : environ 2,8 €/jour (nœud B2ms, équilibreur, registre,
+disques). Une démonstration de trois heures coûte moins d'un euro ;
+`detruire` ramène à zéro. Le rapport, Partie 4, expose les choix et leurs
+limites.
+
 ---
 
 ## Vérifier
@@ -334,7 +366,7 @@ réelle n'exerce.
 
 ```bash
 .venv/bin/pip install -r requirements-dev.txt
-.venv/bin/python -m pytest              # 129 tests unitaires, 0,1 s, hors ligne
+.venv/bin/python -m pytest              # 169 tests unitaires, 0,1 s, hors ligne
 ```
 
 ```bash
@@ -507,7 +539,7 @@ sql/                     toute la transformation, versionnée
 tests/
   verifier.py            459 contrôles contre l'entrepôt vivant
   demontrer.py           cinq démonstrations, par injection puis remise en état
-  test_lake.py           129 tests unitaires — hors ligne, sans Docker
+  test_lake.py           169 tests unitaires — hors ligne, sans Docker
   test_warehouse.py      (pytest, en une fraction de seconde)
   test_config.py
   test_run.py            ce que l'orchestrateur tient pour déjà ingéré
@@ -515,6 +547,11 @@ tests/
 
 exploration/             profilage initial des sources (DuckDB)
 ops/crontab.example      planification — appelle eds.supervision
+ops/cloud.sh             déployer, charger, restituer, détruire sur Azure
+infra/                   déploiement cloud
+  Dockerfile             image du pipeline — code seul, non root
+  terraform/             socle Azure : stockage, coffre, registre, AKS
+  k8s/base/              manifestes : ClickHouse, Metabase, pipeline, secrets
 docs/                    le rapport, son rendu PDF et ses captures
 ```
 
