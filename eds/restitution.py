@@ -92,16 +92,17 @@ import urllib.error
 import urllib.request
 
 from eds import journal as mod_journal
-from eds.config import exiger, langue_metabase
+from eds.config import exiger, langue_metabase, url_metabase
 
 LOG = logging.getLogger("eds.restitution")
 
-# Exposé par docker-compose (`ports: 3000:3000`) : ce script tourne sur
-# l'hôte, jamais dans le réseau Docker — à ne pas confondre avec le nom
-# `clickhouse` utilisé dans les connexions ClickHouse posées plus bas, qui
-# lui doit rester le nom du service (c'est Metabase, DANS le conteneur, qui
-# doit joindre ClickHouse).
-MB_URL = "http://localhost:3000"
+# Exposé par docker-compose (`ports: 3000:3000`) quand ce script tourne sur
+# l'hôte ; `MB_URL=http://metabase:3000` quand il tourne dans le cluster, à
+# côté de Metabase (`eds.config.url_metabase` charge `.env` puis applique la
+# surcharge). À ne pas confondre avec le nom `clickhouse` des connexions
+# posées plus bas, qui reste celui que Metabase doit joindre depuis SON
+# conteneur.
+MB_URL = url_metabase()
 
 TENTATIVES_SANTE_MAX = 60
 INTERVALLE_SANTE_S = 2
