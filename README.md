@@ -116,7 +116,7 @@ ignoré.
 | Données source | `eds-chu-sujet/source-filestorage/` — voir ci-dessus |
 
 Les images sont **épinglées à une version exacte** dans `docker-compose.yml` —
-`clickhouse-server:25.8` et `metabase:v0.58.32` — pour que deux clones du dépôt
+`clickhouse-server:25.8.33.6` et `metabase:v0.58.32.1` — pour que deux clones du dépôt
 pris à deux dates donnent le même environnement. ClickHouse reste en 25.8
 délibérément : la 26.x renvoie les refus de droits en HTTP 403, statut sur
 lequel le pilote embarqué dans Metabase ne lit plus le message d'erreur, et la
@@ -530,7 +530,7 @@ Détaillés et justifiés dans [`docs/RAPPORT.md`](docs/RAPPORT.md).
 ## Organisation du dépôt
 
 ```
-docker-compose.yml       ClickHouse 25.8 et Metabase v0.58.32, versions épinglées
+docker-compose.yml       ClickHouse 25.8.33.6 et Metabase v0.58.32.1, versions épinglées
 requirements.txt         2 dépendances — le pipeline
 requirements-dev.txt     pytest — les tests unitaires, hors du chemin d'exécution
 
