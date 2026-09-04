@@ -248,3 +248,104 @@ def test_source_absente_est_une_information_pas_un_avertissement(lake_factice, c
     absences = [r for r in caplog.records if r.message == "source absente"]
     assert len(absences) == len(warehouse.CHARGEURS)
     assert {r.levelname for r in absences} == {"INFO"}
+
+
+# ── Lecture du lake par le moteur ────────────────────────────────────────
+def test_lecteur_fichier_produit_un_file_avec_structure(env_vierge):
+    table, provenance = warehouse.source_lake(
+        "patients/2026-08-26/patients.csv", "CSVWithNames", "patient_pseudo String"
+    )
+    assert table == (
+        "file('lake/patients/2026-08-26/patients.csv', CSVWithNames, 'patient_pseudo String')"
+    )
+    assert provenance == "replaceOne(_path, '/var/lib/clickhouse/user_files/', '')"
+
+
+def test_lecteur_fichier_sans_structure_laisse_le_moteur_deviner(env_vierge):
+    table, _ = warehouse.source_lake("actes/2026-08-29/actes.parquet", "Parquet")
+    assert table == "file('lake/actes/2026-08-29/actes.parquet', Parquet)"
+
+
+def test_lecteur_blob_passe_par_la_named_collection(env_vierge, monkeypatch):
+    monkeypatch.setenv("EDS_LAKE_LECTEUR", "blob")
+    table, provenance = warehouse.source_lake(
+        "patients/2026-08-26/patients.csv", "CSVWithNames", "patient_pseudo String"
+    )
+    assert table == (
+        "azureBlobStorage(eds_lake, blob_path='patients/2026-08-26/patients.csv', "
+        "format='CSVWithNames', structure='patient_pseudo String')"
+    )
+    assert provenance == "'lake/patients/2026-08-26/patients.csv'"
+
+
+def test_lecteur_blob_sans_structure(env_vierge, monkeypatch):
+    monkeypatch.setenv("EDS_LAKE_LECTEUR", "blob")
+    table, _ = warehouse.source_lake("actes/2026-08-29/actes.parquet", "Parquet")
+    assert table == (
+        "azureBlobStorage(eds_lake, blob_path='actes/2026-08-29/actes.parquet', format='Parquet')"
+    )
+
+
+def test_la_provenance_a_la_meme_forme_dans_les_deux_lecteurs(env_vierge, monkeypatch):
+    """Un fichier chargé en local et en cloud porte le même `_source_path`."""
+    _, fichier = warehouse.source_lake("sejours/2026-08-01/sejours.csv", "CSVWithNames")
+    monkeypatch.setenv("EDS_LAKE_LECTEUR", "blob")
+    _, blob = warehouse.source_lake("sejours/2026-08-01/sejours.csv", "CSVWithNames")
+    # En mode fichier, `_path` vaut `/var/lib/clickhouse/user_files/lake/…`,
+    # d'où `lake/…` après retrait du préfixe : la même chaîne qu'en blob.
+    assert blob == "'lake/sejours/2026-08-01/sejours.csv'"
+    assert fichier.startswith("replaceOne(_path")
+
+
+@pytest.mark.parametrize(
+    "chemin",
+    ["a'b.csv", "../etc/passwd", "x/../../y", "a b.csv", "", "x;y"],
+)
+def test_chemin_hostile_est_refuse(env_vierge, chemin):
+    with pytest.raises(ValueError, match="Chemin"):
+        warehouse.source_lake(chemin, "Parquet")
+
+
+@pytest.mark.parametrize("format", ["Parquet'", "CSV With Names", "", "x()"])
+def test_format_hostile_est_refuse(env_vierge, format):
+    with pytest.raises(ValueError, match="Format"):
+        warehouse.source_lake("a.csv", format)
+
+
+@pytest.mark.parametrize("structure", ["a String'", "a String\\"])
+def test_structure_hostile_est_refusee(env_vierge, structure):
+    with pytest.raises(ValueError, match="Structure"):
+        warehouse.source_lake("a.csv", "CSVWithNames", structure)
+
+
+def test_la_sonde_du_lake_est_un_chemin_admis(env_vierge):
+    table, _ = warehouse.source_lake(".sonde", "LineAsString")
+    assert table == "file('lake/.sonde', LineAsString)"
+
+
+def test_tous_les_chargeurs_passent_par_source_lake(env_vierge, monkeypatch):
+    """Aucun chargeur ne garde un `file()` en dur : en blob, aucun n'en émet."""
+    monkeypatch.setenv("EDS_LAKE_LECTEUR", "blob")
+    for _, fabriquer_sql in warehouse.CHARGEURS.values():
+        sql = fabriquer_sql("2026-08-01", "run0")
+        assert "file(" not in sql
+        assert "azureBlobStorage(eds_lake" in sql
+        assert "replaceOne(_path" not in sql
+
+
+# ── Hôte ClickHouse ──────────────────────────────────────────────────────
+def test_hote_clickhouse_par_defaut_est_local(env_vierge):
+    assert warehouse.hote_clickhouse() == ("localhost", 8123)
+
+
+def test_hote_clickhouse_se_surcharge(env_vierge, monkeypatch):
+    monkeypatch.setenv("CH_HOST", "clickhouse")
+    monkeypatch.setenv("CH_PORT", "8124")
+    assert warehouse.hote_clickhouse() == ("clickhouse", 8124)
+
+
+@pytest.mark.parametrize("port", ["abc", "0", "-1", "70000"])
+def test_port_clickhouse_invalide_est_refuse(env_vierge, monkeypatch, port):
+    monkeypatch.setenv("CH_PORT", port)
+    with pytest.raises(RuntimeError, match="CH_PORT"):
+        warehouse.hote_clickhouse()
