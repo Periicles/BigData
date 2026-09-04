@@ -96,6 +96,40 @@ def avec_reprises(action, description: str):
             attente *= 2  # temporisation exponentielle
 
 
+def jours_deja_ingeres(ch) -> set[str]:
+    """Jours dont TOUTES les sources déposées sont chargées en bronze.
+
+    Interroger la seule table des séjours ne suffit pas, et le dépôt
+    d'évolution du CHU le montre : le 2026-08-29 n'apporte que des actes. Un
+    jour sans séjour paraîtrait alors éternellement en attente, alors que
+    tout ce qui a été déposé est chargé.
+
+    La règle inverse est tout aussi nécessaire. Le chargement traite les
+    sources l'une après l'autre : si l'une échoue après les séjours, sa
+    partition manque alors que le jour paraît ingéré. La relance le
+    sauterait, et les lignes absentes ne reviendraient jamais — une perte
+    silencieuse, alors que la reprise est censée n'être qu'une relance. On
+    exige donc que chaque source déposée ce jour-là soit effectivement
+    présente, ni plus, ni moins.
+
+    Les référentiels n'entrent pas dans le compte : ils ne sont pas
+    partitionnés par jour de dépôt (`CHARGEURS` ne les porte pas).
+    """
+    attendues: dict[str, set[str]] = defaultdict(set)
+    for source in CHARGEURS:
+        for jour in lister_jours(source):
+            attendues[jour].add(source)
+
+    chargees: dict[str, set[str]] = defaultdict(set)
+    for source, (table, _) in CHARGEURS.items():
+        for (jour,) in ch.query(
+            f"SELECT DISTINCT toString(_jour_depot) FROM {table}"
+        ).result_rows:
+            chargees[jour].add(source)
+
+    return {j for j, sources in attendues.items() if chargees[j] >= sources}
+
+
 class Pipeline:
     def __init__(self) -> None:
         self.run_id = uuid.uuid4().hex[:12]
@@ -178,36 +212,11 @@ class Pipeline:
             LOG.warning("journal ClickHouse indisponible", exc_info=True)
 
     # ── état ─────────────────────────────────────────────────────────────
-    def jours_deja_ingeres(self) -> set[str]:
-        """Jours dont TOUTES les sources déposées sont chargées en bronze.
-
-        Interroger la seule table des séjours ne suffit pas. Le chargement
-        traite les sources l'une après l'autre : si l'une échoue après les
-        séjours, sa partition manque alors que le jour paraît ingéré. La
-        relance le sauterait, et les lignes absentes ne reviendraient jamais
-        — une perte silencieuse, alors que la reprise est censée n'être
-        qu'une relance. On exige donc que chaque source déposée ce jour-là
-        soit effectivement présente.
-        """
-        attendues: dict[str, set[str]] = defaultdict(set)
-        for source in CHARGEURS:
-            for jour in lister_jours(source):
-                attendues[jour].add(source)
-
-        chargees: dict[str, set[str]] = defaultdict(set)
-        for source, (table, _) in CHARGEURS.items():
-            for (jour,) in self.ch.query(
-                f"SELECT DISTINCT toString(_jour_depot) FROM {table}"
-            ).result_rows:
-                chargees[jour].add(source)
-
-        return {j for j, sources in attendues.items() if chargees[j] >= sources}
-
     def jours_a_traiter(self, tout: bool) -> list[str]:
         disponibles = jours_disponibles()
         if tout:
             return disponibles
-        deja = self.jours_deja_ingeres()
+        deja = jours_deja_ingeres(self.ch)
         return [j for j in disponibles if j not in deja]
 
     # ── étapes ───────────────────────────────────────────────────────────
@@ -372,12 +381,10 @@ def afficher_etat() -> int:
 
     ch = client()
     disponibles = jours_disponibles()
-    ingeres = {
-        l[0]
-        for l in ch.query(
-            "SELECT DISTINCT toString(_jour_depot) FROM bronze.sejours"
-        ).result_rows
-    }
+    # La même règle que l'exécution incrémentale, et pas une approximation :
+    # afficher « en attente » un jour que le pipeline tient pour ingéré
+    # ferait relancer pour rien.
+    ingeres = jours_deja_ingeres(ch)
 
     print("\nJOURS DE DÉPÔT")
     for jour in disponibles:

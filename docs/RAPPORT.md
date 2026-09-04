@@ -1771,10 +1771,10 @@ sont donc gardés.
 | Lancement manuel | `.venv/bin/python -m eds.run` | incrémental : ingère les seuls jours absents, reconstruit silver et gold, réapplique les droits |
 | Rejeu d'un jour précis | `.venv/bin/python -m eds.run --jour 2026-08-27` | réécrit sa partition bronze (`DROP PARTITION` puis rechargement) ; sans effet sur les autres jours |
 | Rechargement complet | `.venv/bin/python -m eds.run --tout` | relit les 28 jours ; nécessaire après un changement de jeu de données source, jamais après un simple incident (§ 10) |
-| État de l'entrepôt, sans rien modifier | `.venv/bin/python -m eds.run --etat` | jours ingérés/en attente, volumes par couche, cinq dernières étapes |
+| État de l'entrepôt, sans rien modifier | `.venv/bin/python -m eds.run --etat` | alerte en cours s'il y en a une (§ 9), jours ingérés/en attente, volumes par couche, cinq dernières étapes. Le verdict « ingéré » est rendu par `jours_deja_ingeres`, celui-là même qui commande l'exécution incrémentale : un jour sans séjour — le dépôt d'évolution du 2026-08-29 n'apporte que des actes — n'est donc pas déclaré en attente pour cette seule raison |
 | Provisionnement de la restitution | `.venv/bin/python -m eds.restitution` | (re)crée connexions, comptes, droits et tableaux de bord Metabase — idempotent, ~6 s au premier passage, ~1,2 s ensuite |
 | État de Metabase, sans rien modifier | `.venv/bin/python -m eds.restitution --etat` | connexions et tableaux de bord déjà provisionnés |
-| Tests unitaires, hors ligne | `.venv/bin/python -m pytest` | 126 tests sur les fonctions pures — pseudonymisation, découpage SQL, résolution des référentiels, seuils — et sur le superviseur (verrou, relance, alerte), qui écrit dans un répertoire jetable. **Ne demandent ni Docker ni entrepôt**, et s'exécutent en moins d'une seconde |
+| Tests unitaires, hors ligne | `.venv/bin/python -m pytest` | 129 tests sur les fonctions pures — pseudonymisation, découpage SQL, résolution des référentiels, seuils — et sur le superviseur (verrou, relance, alerte), qui écrit dans un répertoire jetable. **Ne demandent ni Docker ni entrepôt**, et s'exécutent en moins d'une seconde |
 | Contrôle des 428 propriétés | `.venv/bin/python -m tests.verifier` | rejoue les cinq sections de vérification (dont `conformite`, § 6) |
 | Démonstrations rejouables | `.venv/bin/python -m tests.demontrer` | dont `reprise` (§ 10) et `restitution` (cloisonnement vu depuis Metabase) |
 
@@ -2260,7 +2260,7 @@ identiquement le fait et son indicateur ne serait détectée que par la
 confrontation à la référence — laquelle ne couvre pas tous les chiffres.
 
 **Le nombre de contrôles n'est pas une garantie.** 428 propriétés vérifiées et
-126 tests unitaires ne disent rien de ce qui n'est pas mesuré. Deux des défauts
+129 tests unitaires ne disent rien de ce qui n'est pas mesuré. Deux des défauts
 racontés au chapitre suivant sont passés à travers tous ces contrôles : ils
 n'ont été trouvés qu'en fabriquant une donnée qui n'existait pas, et en lisant
 le document produit.

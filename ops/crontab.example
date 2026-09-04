@@ -1,8 +1,15 @@
 # Planification du pipeline EDS — collecte et transformation quotidiennes.
 #
-# Installation :   crontab ops/crontab.example
+# Installation :   sed "s|CHEMIN_DU_DEPOT|$PWD|" ops/crontab.example > /tmp/eds.crontab
+#                  crontab /tmp/eds.crontab
 # Vérification :   crontab -l
 # Désinstallation: crontab -r
+#
+# La substitution est nécessaire parce que `cron` n'exécute pas un shell de
+# connexion : il n'expanse ni `~`, ni les variables du profil, et son
+# répertoire de travail n'est pas celui du dépôt. Le chemin doit donc être
+# absolu et écrit en toutes lettres. Il est laissé en marque-place plutôt
+# qu'en valeur réelle : un dépôt ne porte le chemin de personne.
 #
 # Le CHU dépose ses fichiers chaque jour. Le pipeline s'exécute à 03h10,
 # après la fenêtre de dépôt et avant la prise de poste.
@@ -36,6 +43,6 @@
 # (Python absent, disque plein, conteneur arrêté).
 
 SHELL=/bin/bash
-EDS_HOME=/Users/periicles/Dev/BigData
+EDS_HOME=CHEMIN_DU_DEPOT
 
 10 3 * * *  cd $EDS_HOME && .venv/bin/python -m eds.supervision >> logs/cron.log 2>&1

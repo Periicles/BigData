@@ -282,9 +282,19 @@ sont ingérés ; les anciens ne sont ni relus ni dupliqués.
 
 ### Planification
 
+Le pipeline tourne alors chaque nuit, sans qu'on ait à y revenir :
+
 ```bash
-crontab ops/crontab.example     # exécution quotidienne à 03h10
+# Depuis la racine du dépôt. `cron` n'expanse ni ~ ni les variables du
+# profil : le chemin du dépôt doit lui être donné en toutes lettres.
+sed "s|CHEMIN_DU_DEPOT|$PWD|" ops/crontab.example > /tmp/eds.crontab
+crontab /tmp/eds.crontab
+crontab -l                      # vérifier la ligne installée
 ```
+
+Exécution quotidienne à 03h10 : après la fenêtre de dépôt du CHU, avant la
+prise de poste — de sorte qu'un incident se découvre en arrivant, jamais en
+pleine journée de soin. `crontab -r` désinstalle.
 
 `cron` déclenche, et rien d'autre : il ignore qu'une exécution précédente
 court encore, il ne relance pas ce qui a échoué, et il ne prévient personne.
@@ -324,7 +334,7 @@ réelle n'exerce.
 
 ```bash
 .venv/bin/pip install -r requirements-dev.txt
-.venv/bin/python -m pytest              # 126 tests unitaires, 0,1 s, hors ligne
+.venv/bin/python -m pytest              # 129 tests unitaires, 0,1 s, hors ligne
 ```
 
 ```bash
@@ -497,9 +507,10 @@ sql/                     toute la transformation, versionnée
 tests/
   verifier.py            459 contrôles contre l'entrepôt vivant
   demontrer.py           cinq démonstrations, par injection puis remise en état
-  test_lake.py           126 tests unitaires — hors ligne, sans Docker
+  test_lake.py           129 tests unitaires — hors ligne, sans Docker
   test_warehouse.py      (pytest, en une fraction de seconde)
   test_config.py
+  test_run.py            ce que l'orchestrateur tient pour déjà ingéré
   test_supervision.py    verrou, relance et alerte, faux pipeline injecté
 
 exploration/             profilage initial des sources (DuckDB)
