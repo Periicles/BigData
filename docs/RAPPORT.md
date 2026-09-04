@@ -1470,14 +1470,11 @@ FROM ops.executions WHERE statut = 'echec'
 GROUP BY etape ORDER BY echecs DESC;
 ```
 
-```
-lake     15
-```
-
-soit 15 échecs sur 90 exécutions distinctes (`run_id`), tous de la famille
-métier — un compte voué à grossir à chaque relecture de `tests.demontrer
-reprise`, qui force un jour inexistant, sans que cela change rien à la
-classification qu'il illustre.
+Elle ne porte aujourd'hui que la ligne `lake`, tous de la famille métier, et
+ce compte grossit à chaque relecture de `tests.demontrer reprise`, qui force
+un jour inexistant. Le nombre importe peu : ce qu'il montre, c'est que la
+famille métier est la seule à se répéter — elle décrit une situation
+reproductible, quand l'échec technique ne survient qu'accidentellement.
 
 **La propriété qui rend la reprise triviale : il n'y a rien à restaurer.**
 Bronze est la source de vérité durable — chaque partition (`_jour_depot`) est
@@ -1547,26 +1544,27 @@ SELECT demarre_a, run_id, etape, statut, lignes, duree_s, message
 FROM ops.executions ORDER BY demarre_a DESC LIMIT 20;
 ```
 
-**Les chiffres réels du journal, au moment de la rédaction :**
-`logs/pipeline.log` compte **58 765 lignes** ; `ops.executions` porte
-**90 exécutions distinctes** (`run_id`), pour **8 étapes** possibles et
-**15 étapes en échec** (§ 10) — le reste en succès. Ces trois chiffres ne
-sont pas figés : chaque relance de `eds.run` ou de `tests.demontrer` ajoute
-ses propres lignes et sa propre exécution — c'est un journal, pas un
-instantané.
+**Ce qui distingue les deux destinations est leur grain, pas leur taille.**
+Le fichier porte **une ligne par événement** — démarrage, fin d'étape,
+chargement d'une source, absence de dépôt — dans l'ordre où ils surviennent.
+La table porte **une ligne par étape et par exécution**, avec son statut, son
+volume et sa durée. Le fichier raconte, la table totalise. Les deux restent
+cohérentes entre elles, puisqu'écrites par le même code au même instant
+(`Pipeline.etape`, § 10).
 
-**Et l'écart entre les deux destinations se lit dans ces chiffres.** Le
-pipeline n'efface jamais une ligne, mais la table vit dans le volume
-ClickHouse : sa destruction lors du retour en arrière de la montée de version
-— racontée dans les leçons du projet — a fait repartir `ops.executions` du
-3 septembre, quand le fichier, lui, porte encore les 58 765 lignes de tout le
-projet. La
-table est plus riche à interroger, le fichier est plus durable — c'est
-précisément pourquoi les deux coexistent. Le fichier de bord accumule une ligne par
-étape et par exécution (accessoirement plus dense que la table pendant le
-développement, où chaque relance de test ajoute ses propres lignes) ; les
-deux destinations restent cohérentes entre elles, puisqu'écrites par le même
-code au même instant (`Pipeline.etape`, § 10).
+Aucun compte n'est donné ici, et c'est délibéré : ce sont des journaux, pas
+des instantanés. Chaque relance de `eds.run` ou de `tests.demontrer` y ajoute
+ses lignes, si bien qu'un chiffre écrit dans ce rapport serait faux le
+lendemain. Les deux se comptent en une commande — `wc -l logs/pipeline.log`
+d'un côté, `SELECT uniqExact(run_id) FROM ops.executions` de l'autre.
+
+**Une asymétrie mérite en revanche d'être connue : les deux n'ont pas la même
+durée de vie.** Le pipeline n'efface jamais une ligne, mais la table vit dans
+le volume ClickHouse — sa destruction lors du retour en arrière de la montée
+de version, racontée dans les leçons du projet, a fait repartir
+`ops.executions` de zéro, quand le fichier n'avait rien perdu. La table est
+plus riche à interroger, le fichier plus durable : c'est précisément pourquoi
+les deux coexistent.
 
 **Trois niveaux, et une règle qui les sépare.** `INFO` décrit le déroulement
 normal — étape terminée, source chargée, source absente un jour où elle n'est
