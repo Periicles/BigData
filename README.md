@@ -325,8 +325,8 @@ réelle n'exerce.
 | Contrôle | Ce qu'il prouve |
 |---|---|
 | `verifier pseudonymisation` | Les 17 384 valeurs identifiantes de la source sont introuvables dans le lake ; aucune collision de pseudonyme ; les jointures survivent |
-| `verifier qualite` | Équation de conservation par source, déduplication, règles métier du §3, intégrité référentielle de silver **et** du modèle en étoile — 53 contrôles |
-| `verifier indicateurs` | Les indicateurs du §4, calculés depuis gold : leur **valeur restituée** et la propriété qui la fonde — dénominateur de la DMS, inclusion numérateur/dénominateur de la réadmission (brute et ajustée), seuils d'alerte effectivement issus de la configuration, coïncidence de chaque table agrégée avec le fait dont elle sort — 50 contrôles |
+| `verifier qualite` | Équation de conservation par source, déduplication, règles métier du §3, intégrité référentielle de silver **et** du modèle en étoile — 61 contrôles |
+| `verifier indicateurs` | Les indicateurs du §4, calculés depuis gold : leur **valeur restituée** et la propriété qui la fonde — dénominateur de la DMS, inclusion numérateur/dénominateur de la réadmission (brute et ajustée), seuils d'alerte effectivement issus de la configuration, coïncidence de chaque table agrégée avec le fait dont elle sort — 73 contrôles |
 | `verifier rgpd` | Les cinq contraintes RGPD, vérifiées sur l'entrepôt réel : pseudonymisation, minimisation, cloisonnement, petits effectifs, traçabilité — plus l'absence de donnée personnelle dans les journaux |
 | `verifier conformite` | Confrontation directe de l'entrepôt aux valeurs de référence fournies par l'intervenant — silver et les six indicateurs — comptages exacts, moyennes à ±0,1. Fichier de référence **local, non versionné** : la section s'ignore, plutôt que d'échouer, s'il est absent |
 | `demontrer cloisonnement` | Chaque compte accède à sa base et se voit refuser les trois autres, par le moteur |
@@ -480,7 +480,7 @@ tests/
 
 exploration/             profilage initial des sources (DuckDB)
 ops/crontab.example      planification
-docs/                    le rapport, ses captures, et le script qui le rend en PDF
+docs/                    le rapport, son rendu PDF et ses captures
 ```
 
 ---

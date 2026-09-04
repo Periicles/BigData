@@ -1456,10 +1456,13 @@ s'observe dans l'historique des exécutions déjà journalisées :
 | `lake` | `ErreurPipeline: aucun fichier trouvé pour le 2099-01-01` | métier | échec immédiat, aucune retentative — répété à chaque rejeu de `tests.demontrer reprise`, qui force un jour inexistant |
 | `silver` | `DatabaseError`: … Function with name `` `quote` `` does not exist | définitive (ni `OperationalError`, ni « Connection ») | échec immédiat malgré la classe `DatabaseError` — une erreur SQL réelle rencontrée en développement, pas retentée puisqu'aucune reprise n'aurait changé une fonction inexistante |
 
-Ce que ce tableau ne peut pas montrer, c'est un compte figé : la première
-ligne se réenrichit d'une occurrence à chaque exécution de la démonstration
-citée, et `ops.executions` est un journal qui ne s'efface jamais (§ 11). Au
-moment de la rédaction, la répartition par étape s'obtenait par :
+Les deux lignes ci-dessus ont été relevées sur l'historique du développement.
+La seconde n'y figure plus : la table vit dans le volume ClickHouse, et sa
+recréation l'a remise à zéro — le pipeline, lui, n'y efface jamais rien. C'est
+exactement l'asymétrie qui justifie les deux destinations du § 11, et
+`logs/pipeline.log`, simple fichier, a tout conservé.
+
+La répartition par étape s'obtient par :
 
 ```sql
 SELECT etape, count() AS echecs
@@ -1468,14 +1471,13 @@ GROUP BY etape ORDER BY echecs DESC;
 ```
 
 ```
-lake     72
-silver    2
-gold      1
+lake     15
 ```
 
-soit 75 échecs sur 412 exécutions distinctes (`run_id`) — un chiffre voué à
-grossir encore côté `lake` à chaque nouvelle relecture de `tests.demontrer
-reprise`, sans que cela change rien à la classification qu'il illustre.
+soit 15 échecs sur 90 exécutions distinctes (`run_id`), tous de la famille
+métier — un compte voué à grossir à chaque relecture de `tests.demontrer
+reprise`, qui force un jour inexistant, sans que cela change rien à la
+classification qu'il illustre.
 
 **La propriété qui rend la reprise triviale : il n'y a rien à restaurer.**
 Bronze est la source de vérité durable — chaque partition (`_jour_depot`) est
@@ -1546,12 +1548,21 @@ FROM ops.executions ORDER BY demarre_a DESC LIMIT 20;
 ```
 
 **Les chiffres réels du journal, au moment de la rédaction :**
-`logs/pipeline.log` compte **42 743 lignes** ; `ops.executions` porte
-**412 exécutions distinctes** (`run_id`), pour **8 étapes** possibles et
-**75 étapes en échec** (§ 10) — le reste en succès. Ces trois chiffres ne
+`logs/pipeline.log` compte **58 765 lignes** ; `ops.executions` porte
+**90 exécutions distinctes** (`run_id`), pour **8 étapes** possibles et
+**15 étapes en échec** (§ 10) — le reste en succès. Ces trois chiffres ne
 sont pas figés : chaque relance de `eds.run` ou de `tests.demontrer` ajoute
-ses propres lignes et sa propre exécution, sans jamais rien effacer — c'est
-un journal, pas un instantané. Le fichier de bord accumule une ligne par
+ses propres lignes et sa propre exécution — c'est un journal, pas un
+instantané.
+
+**Et l'écart entre les deux destinations se lit dans ces chiffres.** Le
+pipeline n'efface jamais une ligne, mais la table vit dans le volume
+ClickHouse : sa destruction lors du retour en arrière de la montée de version
+— racontée dans les leçons du projet — a fait repartir `ops.executions` du
+3 septembre, quand le fichier, lui, porte encore les 58 765 lignes de tout le
+projet. La
+table est plus riche à interroger, le fichier est plus durable — c'est
+précisément pourquoi les deux coexistent. Le fichier de bord accumule une ligne par
 étape et par exécution (accessoirement plus dense que la table pendant le
 développement, où chaque relance de test ajoute ses propres lignes) ; les
 deux destinations restent cohérentes entre elles, puisqu'écrites par le même
@@ -1764,7 +1775,7 @@ pendant la nuit :**
 3. **Chercher le symptôme dans le tableau ci-dessus** — la cause et la correction sont connues pour les cas déjà rencontrés.
 4. **Corriger la cause**, jamais l'effet — pas de tentative de réparer une table à la main : ce serait contredire la propriété du § 2.
 5. **Relancer `eds.run`** sans option : idempotent, il retrouve tout seul ce qui manque (jour absent, partition incomplète — § 10, point ⑥).
-6. **Vérifier avec `eds.run --etat`**, puis `tests.verifier` — 428 contrôles, dont la conformité aux valeurs de référence si le fichier est présent sur cette machine.
+6. **Vérifier avec `eds.run --etat`**, puis `tests.verifier` — 459 contrôles, dont la conformité aux valeurs de référence si le fichier est présent sur cette machine.
 7. **Si l'incident touchait la restitution**, relancer `eds.restitution` — les tableaux de bord ne se resynchronisent pas tout seuls avec un entrepôt corrigé.
 
 **Remise à zéro complète** (destructif — l'entrepôt et Metabase sont
