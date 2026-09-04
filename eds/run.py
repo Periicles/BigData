@@ -1,4 +1,4 @@
-"""Point d'entrée du pipeline EDS — collecte, transformation, restitution.
+"""Point d'entrée du pipeline EDS — collecte et transformation.
 
     python -m eds.run                      # incrémental : les jours non encore ingérés
     python -m eds.run --jour 2026-08-27    # rejoue un jour précis
@@ -30,7 +30,7 @@ from datetime import date, datetime
 from clickhouse_connect.driver.exceptions import DatabaseError, OperationalError
 
 from eds import journal as mod_journal
-from eds.config import LAKE, exiger
+from eds.config import LAKE, exiger, seuils_alerte
 from eds.lake import copier_jour, jours_disponibles, lister_jours
 from eds.warehouse import (
     CHARGEURS,
@@ -48,6 +48,7 @@ LOG = logging.getLogger("eds.run")
 SCHEMA = (
     "00_databases.sql",
     "10_bronze.sql",
+    "15_quarantaine.sql",
     "20_silver.sql",
     "30_gold.sql",
     "60_ops.sql",
@@ -254,13 +255,30 @@ class Pipeline:
             c["lignes"] = sum(compteurs.values())
 
     def ingerer_referentiels(self) -> None:
-        """Rechargés intégralement : ils ne sont déposés que le premier jour."""
-        jours = [j for j in jours_disponibles() if (LAKE / "referentiels" / j).is_dir()]
+        """Rechargés intégralement, hors du flux incrémental journalier.
+
+        Les jours retenus sont ceux que porte LA SOURCE, filtrés par ce que le
+        lake contient. Le lake est cumulatif : il conserve ce qu'un dépôt
+        antérieur y a écrit, y compris un répertoire que la source ne propose
+        plus. Partir du lake seul ferait donc charger, un jour, une
+        nomenclature périmée dont plus rien ne signale l'âge.
+
+        Tous les dépôts sont transmis, pas seulement le premier : les
+        référentiels n'arrivent pas tous ensemble — `services.csv` et
+        `cim10.csv` au premier jour, `ccam.csv` et `description_service.csv`
+        au dépôt d'évolution. Chacun est résolu sur son dépôt le plus récent
+        (cf. eds/warehouse.py `_dernier_depot`).
+        """
+        jours = [
+            j
+            for j in lister_jours("referentiels")
+            if (LAKE / "referentiels" / j).is_dir()
+        ]
         if not jours:
             LOG.warning("aucun référentiel dans le lake")
             return
         with self.etape("referentiels") as c:
-            compteurs = charger_referentiels(self.ch, jours[0], self.run_id)
+            compteurs = charger_referentiels(self.ch, jours, self.run_id)
             c["lignes"] = sum(compteurs.values())
 
     def transformer(self) -> None:
@@ -273,13 +291,18 @@ class Pipeline:
             )
             c["lignes"] = sum(
                 int(self.ch.command(f"SELECT count() FROM silver.{t}"))
-                for t in ("patients", "sejours", "diagnostics", "monitoring")
+                for t in ("patients", "sejours", "diagnostics", "monitoring", "actes")
             )
 
         with self.etape("gold") as c:
+            # Les seuils d'alerte sont un paramètre d'exploitation, pas une
+            # constante du SQL : ils sont injectés comme le run_id.
             avec_reprises(
                 lambda: executer_fichier(
-                    self.ch, "31_gold_transform.sql", run_id=self.run_id
+                    self.ch,
+                    "31_gold_transform.sql",
+                    run_id=self.run_id,
+                    **seuils_alerte(),
                 ),
                 "gold",
             )
@@ -291,23 +314,26 @@ class Pipeline:
                     "gold_pilotage.fact_releve",
                     "gold_recherche.coh_prevalence",
                     "gold_recherche.coh_description",
+                    # Les tables d'indicateurs sont aussi construites par
+                    # cette étape (31_gold_transform.sql) : les en exclure
+                    # ferait dire au journal qu'il a construit moins que ce
+                    # qu'il a réellement écrit.
+                    "gold_pilotage.kpi_dms_service",
+                    "gold_pilotage.kpi_urgences_jour",
+                    "gold_pilotage.kpi_readmission_service",
+                    "gold_pilotage.kpi_alertes_jour",
+                    "gold_pilotage.kpi_occupation_jour",
+                    "gold_pilotage.kpi_mortalite_service",
+                    "gold_pilotage.kpi_casemix_service",
+                    "gold_pilotage.kpi_origine_service",
+                    "gold_pilotage.fact_acte",
+                    "gold_pilotage.kpi_activite_categorie",
+                    "gold_pilotage.kpi_actes_service",
+                    "gold_pilotage.kpi_actes_type",
+                    "gold_pilotage.kpi_densite_actes_lit",
+                    "gold_pilotage.kpi_facturation_service",
                 )
             )
-
-    def publier_restitution(self) -> None:
-        """Configure Metabase et publie les tableaux de bord.
-
-        Une indisponibilité de Metabase n'invalide pas l'entrepôt : l'étape
-        est journalisée en échec, mais le pipeline de données a déjà abouti.
-        La restitution se rattrape par `python -m eds.metabase`.
-        """
-        from eds.metabase import ErreurMetabase, installer
-
-        try:
-            with self.etape("restitution") as c:
-                c["lignes"] = len(installer())
-        except (ErreurMetabase, OSError) as erreur:
-            LOG.warning("restitution indisponible, entrepôt inchangé : %s", erreur)
 
     def appliquer_droits(self) -> None:
         with self.etape("droits") as c:
@@ -333,7 +359,6 @@ class Pipeline:
         self.ingerer_referentiels()
         self.transformer()
         self.appliquer_droits()
-        self.publier_restitution()
         LOG.info("terminé", extra={"run_id": self.run_id})
 
 
@@ -356,7 +381,7 @@ def afficher_etat() -> int:
     for table in (
         "bronze.sejours",
         "silver.sejours",
-        "silver.rejets",
+        "quarantaine.rejets",
         "gold_pilotage.fact_sejour",
         "gold_recherche.coh_prevalence",
     ):
@@ -381,7 +406,7 @@ def afficher_etat() -> int:
 def main(argv: list[str] | None = None) -> int:
     analyseur = argparse.ArgumentParser(
         prog="python -m eds.run",
-        description="Pipeline EDS CHU — collecte, transformation, restitution.",
+        description="Pipeline EDS CHU — collecte et transformation.",
     )
     groupe = analyseur.add_mutually_exclusive_group()
     groupe.add_argument(

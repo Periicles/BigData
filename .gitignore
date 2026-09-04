@@ -221,8 +221,17 @@ __marimo__/
 # Les fichiers sources contiennent l'identité en clair (nom, prénom, NIR).
 # Ils ne doivent jamais entrer dans l'historique git : un commit ne se retire pas.
 eds-chu-sujet/source-filestorage/
+# Dépôt d'évolution du CHU (2026-08-29), fusionné dans le dépôt ci-dessus.
+eds-chu-sujet/source-evolution/
+# Corrigé de l'intervenant : « ne pas distribuer »
+eds-chu-sujet/REPONSES-KPI-niveau1.pdf
+eds-chu-sujet/corrige-kpi-niveau1.json
 landing/
 lake/
+
+# Journaux du serveur ClickHouse : montés depuis le conteneur
+# (docker-compose.yml), ils atteignent vite plusieurs centaines de Mo.
+docker/clickhouse/logs/
 # Le répertoire doit exister avant `docker compose up` : il est monté dans
 # ClickHouse. Sans lui, Docker le crée lui-même et le pipeline ne peut plus y écrire.
 !lake/.gitkeep
@@ -240,3 +249,13 @@ Screenshots/
 *.salt
 
 .DS_Store
+
+# Les captures d écran sont converties en PNG ; les PDF d origine
+# (impression navigateur) ne sont pas versionnés.
+docs/imgs/*.pdf
+docs/imgs/.DS_Store
+
+# L'outil qui fabrique docs/RAPPORT.pdf depuis le Markdown. Il sert au poste
+# de travail, pas au rendu : le livrable est le rapport, pas sa chaîne de
+# fabrication. Il reste donc sur disque, hors du dépôt.
+docs/en_pdf.py

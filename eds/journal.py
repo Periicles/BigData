@@ -24,7 +24,20 @@ REPERTOIRE_LOGS = RACINE / "logs"
 FICHIER_LOG = REPERTOIRE_LOGS / "pipeline.log"
 
 # Champs ajoutés par le pipeline via `extra=`, à recopier dans le JSON.
-_CHAMPS_METIER = ("run_id", "etape", "jour", "lignes", "duree_s", "statut", "source")
+_CHAMPS_METIER = (
+    "run_id",
+    "etape",
+    "jour",
+    "lignes",
+    "duree_s",
+    "statut",
+    "source",
+    # Les référentiels ne sont pas identifiés par leur source mais par la
+    # table qu'ils alimentent : sans ce champ, quatre chargements distincts
+    # produisent quatre lignes de journal indiscernables.
+    "table",
+    "fichier",
+)
 
 
 class FormateurJSON(logging.Formatter):

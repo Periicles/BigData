@@ -9,7 +9,7 @@
 SELECT database, name AS table, total_rows AS lignes,
        formatReadableSize(total_bytes) AS taille
 FROM system.tables
-WHERE database IN ('bronze', 'silver', 'gold_pilotage', 'gold_recherche', 'ops')
+WHERE database IN ('bronze', 'silver', 'quarantaine', 'gold_pilotage', 'gold_recherche', 'ops')
 ORDER BY database, name;
 
 
@@ -57,7 +57,7 @@ ORDER BY n DESC;
 
 
 -- ⑥ LE SNAPSHOT CUMULATIF DE `patients`
--- 16 200 lignes pour 6 000 patients : chaque fichier journalier contient
+-- 18 000 lignes pour 6 000 patients : chaque fichier journalier contient
 -- TOUTE la population connue. C'est la découverte qui conditionne silver.
 SELECT count() AS lignes, uniqExact(patient_pseudo) AS patients_distincts
 FROM bronze.patients;
@@ -70,7 +70,7 @@ GROUP BY nb_jours ORDER BY nb_jours;
 
 
 -- ⑦ LE JSON IMBRIQUÉ A ÉTÉ APLATI PAR LE MOTEUR
--- 15 000 séjours -> 37 380 codes, 1 à 4 par séjour, 1 seul principal.
+-- 6 797 séjours -> 12 720 codes, 1 à 3 par séjour, 1 seul principal.
 SELECT type_diag, count() AS n FROM bronze.diagnostics GROUP BY type_diag;
 
 SELECT nb_codes, count() AS nb_sejours
@@ -80,8 +80,26 @@ GROUP BY nb_codes ORDER BY nb_codes;
 
 -- ⑧ LE MODÈLE EN ÉTOILE
 -- Trois faits à trois grains différents, trois dimensions conformes.
+--
+-- Le fait se construit SUR la dimension.
 SELECT name AS table, total_rows AS lignes
 FROM system.tables WHERE database = 'gold_pilotage' ORDER BY name;
+
+-- Toute clé étrangère d'un fait doit désigner un membre existant de sa
+-- dimension. Cette requête doit rendre 0 partout — sinon des lignes
+-- disparaîtraient silencieusement de tout graphe joint à la dimension, sans
+-- qu'aucune erreur ne soit levée.
+SELECT 'fact_sejour.patient_pseudo' AS cle, count() AS orphelins
+FROM gold_pilotage.fact_sejour
+WHERE patient_pseudo NOT IN (SELECT patient_pseudo FROM gold_pilotage.dim_patient)
+UNION ALL
+SELECT 'fact_diagnostic.code_cim10', count()
+FROM gold_pilotage.fact_diagnostic
+WHERE code_cim10 NOT IN (SELECT code_cim10 FROM gold_pilotage.dim_cim10)
+UNION ALL
+SELECT 'fact_releve.service_code', count()
+FROM gold_pilotage.fact_releve
+WHERE service_code NOT IN (SELECT service_code FROM gold_pilotage.dim_service);
 
 -- Le croisement que permet l'étoile, et qu'un entrepôt de KPI pré-agrégés
 -- n'aurait pas offert sans l'avoir anticipé :

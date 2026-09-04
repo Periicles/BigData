@@ -1,0 +1,9 @@
+# Dépendances de DÉVELOPPEMENT, tenues à l'écart de `requirements.txt`.
+#
+# Le pipeline tourne avec deux dépendances, et ce compte est un choix
+# défendu dans le rapport : ce qui sert à le TESTER n'a pas à alourdir ce qui
+# le fait TOURNER. Un déploiement n'installe que `requirements.txt`.
+#
+#     .venv/bin/pip install -r requirements-dev.txt
+#     .venv/bin/python -m pytest
+pytest==9.1.1

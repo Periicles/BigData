@@ -2,7 +2,7 @@
 -- SILVER — nettoyé, dédupliqué, cohérent, enrichi.
 --
 -- Recalculé intégralement à chaque exécution depuis bronze. À ce volume
--- (15 000 séjours, 67 000 relevés) c'est instantané, et cela garantit qu'un
+-- (6 800 séjours, 42 000 relevés) c'est instantané, et cela garantit qu'un
 -- rejeu produit exactement le même état. La limite de ce choix est documentée
 -- dans le rapport : il ne tiendrait pas sur plusieurs années d'historique.
 --
@@ -15,6 +15,41 @@
 -- les tables une fois suffit, l'exécution suivante les reconstruit depuis
 -- bronze, sans perte ni migration.
 --
+-- CE QUI N'EST PAS ICI, ET POURQUOI. La frontière tient en une règle :
+--   · une règle de VALIDITÉ de la donnée, fournie par le sujet, est ici —
+--     plages physiologiques, cohérence temporelle, déduplication ;
+--   · une règle MÉTIER, que le sujet ne fournit pas et qui se paramètre,
+--     est en gold — seuils d'alerte clinique, âge à l'événement.
+-- D'où l'absence, dans `monitoring`, des drapeaux d'alerte (seuils
+-- configurables, cf. 31_gold_transform.sql) et, dans `sejours`, de l'âge au
+-- séjour : c'est le croisement d'un attribut de `dim_patient` et d'un axe du
+-- fait, il se calcule à la construction du fait, contre la dimension.
+--
+-- POURQUOI `diagnostics` ET `monitoring` PORTENT `sejour_coherent`, ET
+-- SURTOUT POURQUOI CE N'EST PAS UN FILTRE. La cohérence temporelle d'un
+-- séjour (sortie postérieure à l'admission) est une règle de VALIDITÉ... du
+-- SÉJOUR. Un diagnostic posé et un relevé pris pendant ce séjour sont des
+-- faits médicaux réels, indépendants de la qualité de saisie des deux dates
+-- qui l'encadrent : un code CIM-10 correctement codé reste un code
+-- correctement codé même si `discharge_ts` a été inversé avec
+-- `admission_ts` à la ressaisie. Les écarter reviendrait à faire porter à
+-- une donnée clinique valide l'anomalie d'une autre colonne, sur une autre
+-- table. Seule l'ABSENCE de patient identifié (séjour introuvable, ou
+-- rattaché à un pseudonyme vide) écarte réellement un diagnostic ou un
+-- relevé — cf. l'en-tête MONITORING / DIAGNOSTICS de 21_silver_transform.sql
+-- pour le détail des deux motifs. Le doute sur la cohérence temporelle est
+-- donc SIGNALÉ (le drapeau), jamais SILENCIEUSEMENT PERDU (un filtre).
+--
+-- Conséquence utile : `silver.sejours` ne dépend plus de `silver.patients`,
+-- les quatre tables se construisent indépendamment les unes des autres —
+-- `diagnostics` et `monitoring` restent l'exception assumée : ils lisent
+-- `bronze.sejours` (jamais `silver.sejours`) pour s'enrichir du patient, du
+-- service et de la date d'admission porteurs, afin que gold n'ait plus
+-- jamais besoin de lire `silver.sejours` pour ces deux faits.
+--
+-- Les lignes écartées ne sont pas ici non plus : elles vivent dans la base
+-- `quarantaine`, qui a son propre cycle de vie (cf. 15_quarantaine.sql).
+--
 -- TRAÇABILITÉ — chaque ligne porte le jour de dépôt et le fichier dont elle
 -- provient, recopiés depuis bronze. On répond donc à « d'où vient cette
 -- ligne ? » sans jointure, y compris pour les lignes écartées.
@@ -22,7 +57,11 @@
 
 CREATE TABLE IF NOT EXISTS silver.patients (
     patient_pseudo String,
-    birth_year UInt16,
+    -- NULL si la date de naissance était illisible en source : le patient
+    -- est conservé (attribut descriptif), la ligne est tracée en
+    -- quarantaine (motif 'date_naissance_illisible'). Un pseudonyme VIDE, en
+    -- revanche, n'entre jamais ici : motif 'patient_manquant', écarté.
+    birth_year Nullable(UInt16),
     sex LowCardinality(String),
     region_code LowCardinality(String),
     -- Snapshot cumulatif : la ligne est une réduction de plusieurs lignes
@@ -49,8 +88,6 @@ CREATE TABLE IF NOT EXISTS silver.sejours (
     duree_jours Nullable(Float64),
     -- NULL si séjour en cours
     est_en_cours UInt8,
-    age_au_sejour Nullable(Int16),
-    -- approximé à l'année (RGPD)
     _jour_depot Date,
     _fichier_source String,
     _run_id String,
@@ -64,6 +101,18 @@ CREATE TABLE IF NOT EXISTS silver.diagnostics (
     code_cim10 LowCardinality(String),
     type_diag LowCardinality(String),
     libelle String,
+    -- Attributs du séjour PORTEUR, lus dans bronze.sejours (version retenue
+    -- après déduplication) et NON dans silver.sejours : voir l'en-tête de ce
+    -- fichier pour pourquoi la validité d'un diagnostic ne dépend pas de la
+    -- cohérence temporelle du séjour.
+    patient_pseudo String,
+    service_code LowCardinality(String),
+    -- Nullable : NULL si la date d'admission du séjour porteur était
+    -- illisible en source (0 cas sur ce dépôt, cf. tests.demontrer qualite).
+    admission_ts Nullable(DateTime),
+    -- 1 si le séjour porteur est présent dans silver.sejours (cohérent), 0
+    -- sinon. Un diagnostic reste conservé dans les deux cas.
+    sejour_coherent UInt8,
     -- enrichi depuis le référentiel
     _jour_depot Date,
     _fichier_source String,
@@ -73,16 +122,21 @@ CREATE TABLE IF NOT EXISTS silver.diagnostics (
 ORDER BY
     (stay_id, code_cim10);
 
+-- Les mesures validées, et rien d'autre : ce qui sort d'ici est
+-- physiologiquement plausible. Qualifier un relevé d'« en alerte » est une
+-- décision clinique paramétrable, elle appartient à gold.
 CREATE TABLE IF NOT EXISTS silver.monitoring (
     stay_id String,
     ts DateTime,
     heart_rate Int16,
     spo2 Int16,
     temp_c Decimal(4, 1),
-    alerte_fc UInt8,
-    alerte_spo2 UInt8,
-    alerte_temp UInt8,
-    en_alerte UInt8,
+    -- Mêmes attributs du séjour porteur, et même provenance (bronze.sejours,
+    -- version retenue) que dans `diagnostics` ci-dessus — voir l'en-tête.
+    patient_pseudo String,
+    service_code LowCardinality(String),
+    admission_ts Nullable(DateTime),
+    sejour_coherent UInt8,
     -- _jour_depot est le jour du FICHIER, ts celui de la MESURE. Les deux
     -- diffèrent ici : le monitoring déborde de son jour de dépôt.
     _jour_depot Date,
@@ -94,20 +148,44 @@ ORDER BY
     (stay_id, ts);
 
 -- date de la MESURE, jamais du dépôt
--- Table centrale pour le critère « qualité des traitements » : elle rend les
--- exclusions comptables et interrogeables, au lieu de silencieuses. Elle porte
--- la même traçabilité que les autres : on sait de quel fichier venait chaque
--- ligne écartée, ce qui permet de remonter à la source d'un problème qualité.
 
-CREATE TABLE IF NOT EXISTS silver.rejets (
-    source LowCardinality(String),
-    cle String,
-    motif LowCardinality(String),
-    detail String,
+-- Les actes techniques du séjour. Même principe que `diagnostics` : les
+-- attributs du séjour PORTEUR sont recopiés ici depuis `bronze.sejours`
+-- (version retenue), jamais lus depuis `silver.sejours`.
+--
+-- Cette dénormalisation n'est pas un confort, c'est une CONTRAINTE DU SUJET
+-- D'ÉVOLUTION : « le service est porté par le séjour, pas par l'acte —
+-- récupérez-le sans relier deux tables de faits entre elles ». En portant
+-- `service_code` dès silver, gold construit `fact_acte` sans jamais joindre
+-- `fact_acte` à `fact_sejour` — un croisement fait-à-fait, qui multiplierait
+-- les lignes dès qu'un séjour porte plusieurs actes et fausserait tout
+-- dénombrement.
+--
+-- `libelle` est enrichi depuis `bronze.ref_ccam`, comme celui de
+-- `diagnostics` l'est depuis `ref_cim10`. Le TARIF, lui, n'est pas ici : le
+-- sujet le range dans `dim_ccam` (gold), et une donnée de facturation qui
+-- change dans le temps n'a pas à être figée sur chaque ligne de fait.
+--
+-- Pas de partitionnement, contrairement à `monitoring` : 8 112 actes contre
+-- 42 000 relevés, le découpage n'apporterait rien. `acte_ts` n'en reste pas
+-- moins distinct de `_jour_depot` — les actes sont déposés en une fois, pour
+-- toute la période.
+CREATE TABLE IF NOT EXISTS silver.actes (
+    stay_id String,
+    code_ccam LowCardinality(String),
+    acte_ts DateTime,
+    libelle String,
+    -- enrichi depuis le référentiel
+    patient_pseudo String,
+    service_code LowCardinality(String),
+    admission_ts Nullable(DateTime),
+    -- 1 si le séjour porteur est présent dans silver.sejours (cohérent), 0
+    -- sinon. Un acte reste conservé dans les deux cas.
+    sejour_coherent UInt8,
     _jour_depot Date,
     _fichier_source String,
     _run_id String,
-    _rejected_at DateTime
+    _built_at DateTime
 ) ENGINE = MergeTree
 ORDER BY
-    (source, motif, cle);
+    (stay_id, acte_ts);
